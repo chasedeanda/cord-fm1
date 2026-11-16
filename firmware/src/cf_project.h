@@ -63,6 +63,7 @@ typedef struct {
 typedef struct {
     uint8_t track, note, velocity, on;
 } cf_project_action_t;
+typedef void (*cf_project_action_fn)(void *context, const cf_project_action_t *action);
 
 typedef struct cf_project_s {
     char name[CF_PROJECT_NAME];
@@ -85,6 +86,14 @@ int cf_project_playback_advance(const cf_project_t *project, cf_project_cursor_t
  * until stop. Actions are ordered note-offs, then note-ons. */
 int cf_project_player_start(cf_project_player_t *player, const cf_project_t *project, uint32_t tick);
 unsigned cf_project_player_tick(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
+/* ISR-friendly visitor form: actions are applied one at a time, avoiding a large stack buffer. */
+unsigned cf_project_player_tick_visit(cf_project_player_t *player, cf_project_action_fn visit, void *context);
+unsigned cf_project_player_stop_visit(cf_project_player_t *player, cf_project_action_fn visit, void *context);
+/* Live bridge, implemented by cf_accomp.c. Requires the existing accompaniment
+ * transport to be running; player storage must live in .pool and remain valid. */
+int cf_project_live_start(cf_project_player_t *player, const cf_project_t *project, uint32_t tick);
+void cf_project_live_stop(void);
+int cf_project_live_playing(void);
 unsigned cf_project_player_stop(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
 int cf_project_player_seek(cf_project_player_t *player, uint32_t tick, cf_project_action_t *actions, unsigned capacity, unsigned *released);
 /* Returns matching onset count copied into out (may be zero); returned pointers

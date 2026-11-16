@@ -181,6 +181,51 @@ unsigned cf_project_player_tick(cf_project_player_t *player,cf_project_action_t 
     return count<capacity?count:capacity;
 }
 
+unsigned cf_project_player_stop_visit(cf_project_player_t *player,cf_project_action_fn visit,void *context)
+{
+    if(!player || !visit)return 0;
+    unsigned count=0;
+    for(unsigned i=0;i<CF_PROJECT_PLAYER_VOICES;i++)if(player->voice[i].active) {
+        cf_project_action_t a={player->voice[i].track,player->voice[i].note,0,0};
+        visit(context,&a);count++;player->voice[i].active=0;
+    }
+    player->playing=0;player->project=0;
+    return count;
+}
+
+unsigned cf_project_player_tick_visit(cf_project_player_t *player,cf_project_action_fn visit,void *context)
+{
+    if(!player || !player->playing || !player->project || !visit)return 0;
+    const cf_project_t *p=player->project;unsigned count=0;
+    /* Note-offs are always delivered before new note-ons at the same tick. */
+    for(unsigned i=0;i<CF_PROJECT_PLAYER_VOICES;i++) {
+        cf_project_voice_t *v=&player->voice[i];
+        if(v->active && v->end_tick<=player->cursor.tick) {
+            cf_project_action_t a={v->track,v->note,0,0};visit(context,&a);count++;v->active=0;
+        }
+    }
+    for(unsigned track=0;track<2;track++) {
+        const cf_project_event_t *hits[CF_PROJECT_MAX_EVENTS];
+        unsigned n=cf_project_playback_events(p,&player->cursor,track,hits,CF_PROJECT_MAX_EVENTS);
+        for(unsigned j=0;j<n;j++) {
+            const cf_project_event_t *e=hits[j];
+            uint32_t mix=player->cursor.tick*2654435761u+(uint32_t)(j+1u)*2246822519u+(uint32_t)(track+1u)*3266489917u;
+            if(e->probability==0 || (mix%100u)>=e->probability)continue;
+            unsigned slot=CF_PROJECT_PLAYER_VOICES;
+            for(unsigned k=0;k<CF_PROJECT_PLAYER_VOICES;k++)if(!player->voice[k].active){slot=k;break;}
+            if(slot==CF_PROJECT_PLAYER_VOICES)continue;
+            cf_project_action_t a={(uint8_t)track,e->note,e->velocity,1};visit(context,&a);count++;
+            player->voice[slot].active=1;player->voice[slot].track=(uint8_t)track;
+            player->voice[slot].note=e->note;player->voice[slot].velocity=e->velocity;
+            player->voice[slot].end_tick=player->cursor.tick+e->duration_ticks;
+        }
+    }
+    if(!cf_project_playback_advance(p,&player->cursor,1) || player->cursor.ended) {
+        count+=cf_project_player_stop_visit(player,visit,context);
+    }
+    return count;
+}
+
 int cf_project_valid(const cf_project_t *p)
 {
     if(!p || !cp_text(p->name,CF_PROJECT_NAME,1) || !p->section_count ||

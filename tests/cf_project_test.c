@@ -144,6 +144,38 @@ static void player_scheduler(void)
     CHECK(cf_project_player_stop(&player,actions,CF_PROJECT_PLAYER_ACTIONS)==0);
 }
 
+typedef struct { cf_project_action_t action[16]; unsigned count; } action_log_t;
+static void action_log(void *context,const cf_project_action_t *action)
+{
+    action_log_t *log=(action_log_t *)context;
+    if(log->count<16)log->action[log->count]=*action;
+    log->count++;
+}
+static void visitor_scheduler(void)
+{
+    cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=1;
+    cf_project_event_t m=event(0,0,64);m.duration_ticks=2;
+    cf_project_event_t b=event(0,0,40);b.duration_ticks=1;
+    CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&m));
+    CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&b));
+    cf_project_player_t player;action_log_t log={0};
+    CHECK(cf_project_player_start(&player,&p,0));
+    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==2);
+    CHECK(log.count==2 && log.action[0].on && log.action[1].on);
+    CHECK(log.action[0].track==CF_PROJECT_MELODY && log.action[1].track==CF_PROJECT_BASS);
+    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==1);
+    CHECK(!log.action[2].on && log.action[2].note==40);
+    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==1);
+    CHECK(!log.action[3].on && log.action[3].note==64);
+    CHECK(cf_project_player_stop_visit(&player,action_log,&log)==0);
+    CHECK(!player.playing && !player.project);
+
+    CHECK(cf_project_player_start(&player,&p,0));log.count=0;
+    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==2);
+    CHECK(cf_project_player_stop_visit(&player,action_log,&log)==2);
+    CHECK(log.count==4 && !log.action[2].on && !log.action[3].on);
+}
+
 static void maximum_wire(void)
 {
     cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=8;
@@ -156,6 +188,6 @@ static void maximum_wire(void)
 }
 int main(void)
 {
-    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();player_scheduler();maximum_wire();
+    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();player_scheduler();visitor_scheduler();maximum_wire();
     printf("multi-section project: %u checks, %u failures\n",checks,failures);return failures!=0;
 }

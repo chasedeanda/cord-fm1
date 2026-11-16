@@ -20,6 +20,15 @@ typedef struct {
 } cpa_plan_t;
 typedef struct { cpa_plan_t plan; volatile uint8_t flags; } cpa_mail_t;
 static cpa_mail_t cpa_setup, cpa_edit;
+/* Arrangement MIDI tracks share the existing accompaniment clock. The caller owns
+ * both objects and must keep them alive and immutable while transport is active. */
+static cf_project_player_t *cpa_project_player;
+static void cpa_project_action(void *context,const cf_project_action_t *a)
+{
+    (void)context;
+    uint32_t part=a->track==CF_PROJECT_MELODY?2u:1u; /* melody=LAYER, bass=BASS */
+    if(a->on)cfp_on(part,a->note,a->velocity);else cfp_off(part,a->note);
+}
 static volatile uint8_t cpa_commanded; /* foreground transport intent, including queued PLAY */
 static struct {
     cpa_plan_t plan;
@@ -28,6 +37,26 @@ static struct {
     uint8_t paused, slot, clock_wait, clock_lost, clock_external;
     uint32_t clock_ms, click_generation;
 } cpa;
+int cf_project_live_start(cf_project_player_t *player,const cf_project_t *project,uint32_t tick)
+{
+    if(!player || !project || !cpa.on || cpa_project_player)return 0;
+    uint32_t irq=motion_guard();
+    int ok=cf_project_player_start(player,project,tick) && player->playing;
+    if(ok)cpa_project_player=player;
+    motion_unguard(irq);
+    return ok;
+}
+void cf_project_live_stop(void)
+{
+    uint32_t irq=motion_guard();
+    if(cpa_project_player) {
+        cf_project_player_stop_visit(cpa_project_player,cpa_project_action,0);
+        cpa_project_player=0;
+    }
+    motion_unguard(irq);
+}
+int cf_project_live_playing(void)
+{ return cpa_project_player && cpa_project_player->playing; }
 static int cpa_running(void) { return cpa.on; }
 static int cpa_valid(const cpa_plan_t *p)
 {
@@ -71,6 +100,7 @@ static int cpa_live_chord(void)
 { return cfp_cp==0 && (cfp.n || cfa_k.n); }
 static void cpa_release(void)
 {
+    cf_project_live_stop();
     cf_perf_reset();
     cpa_arp_off();
     cla_cancel(0);
@@ -79,6 +109,7 @@ static void cpa_release(void)
 }
 static void cpa_stop(void)
 {
+    cf_project_live_stop();
     cpa_commanded = 0;
     cla_cancel(0);
     if (!cpa.on) return;
@@ -187,6 +218,10 @@ static void cpa_start(void)
 static void cpa_tick1(void)
 {
     if (!cpa.on || cpa.paused) return;
+    if(cpa_project_player) {
+        cf_project_player_tick_visit(cpa_project_player,cpa_project_action,0);
+        if(!cpa_project_player->playing)cpa_project_player=0;
+    }
     sqp_drum_offs(); cpa.q2 += cfm.beats == 6u ? 1u : 2u;
     cpa.t++; cpa.elapsed++;
     int bar=cpa.t>=cpa.plan.beats*SQ_PPQN;
