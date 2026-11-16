@@ -48,7 +48,23 @@ typedef struct {
     uint8_t ended;
 } cf_project_cursor_t;
 
+#define CF_PROJECT_PLAYER_VOICES (2u * CF_PROJECT_MAX_EVENTS)
+#define CF_PROJECT_PLAYER_ACTIONS (2u * CF_PROJECT_PLAYER_VOICES)
 typedef struct {
+    uint32_t end_tick;
+    uint8_t note, track, velocity, active;
+} cf_project_voice_t;
+typedef struct {
+    const struct cf_project_s *project;
+    cf_project_cursor_t cursor;
+    cf_project_voice_t voice[CF_PROJECT_PLAYER_VOICES];
+    uint8_t playing;
+} cf_project_player_t;
+typedef struct {
+    uint8_t track, note, velocity, on;
+} cf_project_action_t;
+
+typedef struct cf_project_s {
     char name[CF_PROJECT_NAME];
     uint8_t section_count, selected_section;
     uint8_t melody_count, bass_count;
@@ -63,6 +79,14 @@ uint32_t cf_project_total_ticks(const cf_project_t *project);
 /* Deterministic arrangement transport. No allocation, I/O, or audio calls. */
 int cf_project_playback_seek(const cf_project_t *project, cf_project_cursor_t *cursor, uint32_t tick);
 int cf_project_playback_advance(const cf_project_t *project, cf_project_cursor_t *cursor, uint32_t ticks);
+/* Fixed-capacity event scheduler. One call represents one 96-PPQN tick.
+ * tick requires CF_PROJECT_PLAYER_ACTIONS output slots; stop/seek require
+ * CF_PROJECT_PLAYER_VOICES. The referenced project must remain immutable/alive
+ * until stop. Actions are ordered note-offs, then note-ons. */
+int cf_project_player_start(cf_project_player_t *player, const cf_project_t *project, uint32_t tick);
+unsigned cf_project_player_tick(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
+unsigned cf_project_player_stop(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
+int cf_project_player_seek(cf_project_player_t *player, uint32_t tick, cf_project_action_t *actions, unsigned capacity, unsigned *released);
 /* Returns matching onset count copied into out (may be zero); returned pointers
  * refer to the immutable project and remain valid until it is edited. */
 unsigned cf_project_playback_events(const cf_project_t *project, const cf_project_cursor_t *cursor,

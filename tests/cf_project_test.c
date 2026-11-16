@@ -110,6 +110,40 @@ static void playback_timeline(void)
     CHECK(!cf_project_playback_events(&p,&c,CF_PROJECT_MELODY,hits,4)); /* forged cursor rejected */
 }
 
+static void player_scheduler(void)
+{
+    cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=1;
+    cf_project_event_t m=event(0,0,60);m.duration_ticks=2;
+    cf_project_event_t b=event(0,1,36);b.duration_ticks=1;
+    CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&m));
+    CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&b));
+    cf_project_player_t player;cf_project_action_t actions[CF_PROJECT_PLAYER_ACTIONS];
+    CHECK(cf_project_player_start(&player,&p,0));CHECK(player.playing);
+    unsigned n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);
+    CHECK(n==1 && actions[0].on && actions[0].track==CF_PROJECT_MELODY && actions[0].note==60);
+    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);
+    CHECK(n==1 && actions[0].on && actions[0].track==CF_PROJECT_BASS && actions[0].note==36);
+    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);
+    CHECK(n==2);CHECK(!actions[0].on && actions[0].note==60);CHECK(!actions[1].on && actions[1].note==36);
+    CHECK(player.playing && player.cursor.tick==3);
+    unsigned released=0;CHECK(cf_project_player_seek(&player,20,actions,CF_PROJECT_PLAYER_ACTIONS,&released));
+    CHECK(released==0 && player.cursor.tick==20);
+    n=cf_project_player_stop(&player,actions,CF_PROJECT_PLAYER_ACTIONS);CHECK(n==0 && !player.playing);
+    CHECK(!cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS));
+
+    /* Seeking while notes sound emits balanced note-offs before repositioning. */
+    CHECK(cf_project_player_start(&player,&p,0));
+    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);CHECK(n==1 && actions[0].on);
+    CHECK(cf_project_player_seek(&player,12,actions,CF_PROJECT_PLAYER_ACTIONS,&released));
+    CHECK(released==1 && !actions[0].on && actions[0].note==60);
+
+    /* A zero-probability event is intentionally silent. */
+    p.melody[0].probability=0;CHECK(cf_project_valid(&p));
+    CHECK(cf_project_player_start(&player,&p,0));
+    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);CHECK(n==0);
+    CHECK(cf_project_player_stop(&player,actions,CF_PROJECT_PLAYER_ACTIONS)==0);
+}
+
 static void maximum_wire(void)
 {
     cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=8;
@@ -122,6 +156,6 @@ static void maximum_wire(void)
 }
 int main(void)
 {
-    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();maximum_wire();
+    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();player_scheduler();maximum_wire();
     printf("multi-section project: %u checks, %u failures\n",checks,failures);return failures!=0;
 }
