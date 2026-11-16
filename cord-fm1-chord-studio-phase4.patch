@@ -1,0 +1,262 @@
+--- a/firmware/src/cf_accomp.c
++++ b/firmware/src/cf_accomp.c
+@@ -20,6 +20,15 @@
+ } cpa_plan_t;
+ typedef struct { cpa_plan_t plan; volatile uint8_t flags; } cpa_mail_t;
+ static cpa_mail_t cpa_setup, cpa_edit;
++/* Arrangement MIDI tracks share the existing accompaniment clock. The caller owns
++ * both objects and must keep them alive and immutable while transport is active. */
++static cf_project_player_t *cpa_project_player;
++static void cpa_project_action(void *context,const cf_project_action_t *a)
++{
++    (void)context;
++    uint32_t part=a->track==CF_PROJECT_MELODY?2u:1u; /* melody=LAYER, bass=BASS */
++    if(a->on)cfp_on(part,a->note,a->velocity);else cfp_off(part,a->note);
++}
+ static volatile uint8_t cpa_commanded; /* foreground transport intent, including queued PLAY */
+ static struct {
+     cpa_plan_t plan;
+@@ -28,6 +37,26 @@
+     uint8_t paused, slot, clock_wait, clock_lost, clock_external;
+     uint32_t clock_ms, click_generation;
+ } cpa;
++int cf_project_live_start(cf_project_player_t *player,const cf_project_t *project,uint32_t tick)
++{
++    if(!player || !project || !cpa.on || cpa_project_player)return 0;
++    uint32_t irq=motion_guard();
++    int ok=cf_project_player_start(player,project,tick) && player->playing;
++    if(ok)cpa_project_player=player;
++    motion_unguard(irq);
++    return ok;
++}
++void cf_project_live_stop(void)
++{
++    uint32_t irq=motion_guard();
++    if(cpa_project_player) {
++        cf_project_player_stop_visit(cpa_project_player,cpa_project_action,0);
++        cpa_project_player=0;
++    }
++    motion_unguard(irq);
++}
++int cf_project_live_playing(void)
++{ return cpa_project_player && cpa_project_player->playing; }
+ static int cpa_running(void) { return cpa.on; }
+ static int cpa_valid(const cpa_plan_t *p)
+ {
+@@ -71,6 +100,7 @@
+ { return cfp_cp==0 && (cfp.n || cfa_k.n); }
+ static void cpa_release(void)
+ {
++    cf_project_live_stop();
+     cf_perf_reset();
+     cpa_arp_off();
+     cla_cancel(0);
+@@ -79,6 +109,7 @@
+ }
+ static void cpa_stop(void)
+ {
++    cf_project_live_stop();
+     cpa_commanded = 0;
+     cla_cancel(0);
+     if (!cpa.on) return;
+@@ -187,6 +218,10 @@
+ static void cpa_tick1(void)
+ {
+     if (!cpa.on || cpa.paused) return;
++    if(cpa_project_player) {
++        cf_project_player_tick_visit(cpa_project_player,cpa_project_action,0);
++        if(!cpa_project_player->playing)cpa_project_player=0;
++    }
+     sqp_drum_offs(); cpa.q2 += cfm.beats == 6u ? 1u : 2u;
+     cpa.t++; cpa.elapsed++;
+     int bar=cpa.t>=cpa.plan.beats*SQ_PPQN;
+--- a/firmware/src/cf_project.c
++++ b/firmware/src/cf_project.c
+@@ -181,6 +181,51 @@
+     return count<capacity?count:capacity;
+ }
+ 
++unsigned cf_project_player_stop_visit(cf_project_player_t *player,cf_project_action_fn visit,void *context)
++{
++    if(!player || !visit)return 0;
++    unsigned count=0;
++    for(unsigned i=0;i<CF_PROJECT_PLAYER_VOICES;i++)if(player->voice[i].active) {
++        cf_project_action_t a={player->voice[i].track,player->voice[i].note,0,0};
++        visit(context,&a);count++;player->voice[i].active=0;
++    }
++    player->playing=0;player->project=0;
++    return count;
++}
++
++unsigned cf_project_player_tick_visit(cf_project_player_t *player,cf_project_action_fn visit,void *context)
++{
++    if(!player || !player->playing || !player->project || !visit)return 0;
++    const cf_project_t *p=player->project;unsigned count=0;
++    /* Note-offs are always delivered before new note-ons at the same tick. */
++    for(unsigned i=0;i<CF_PROJECT_PLAYER_VOICES;i++) {
++        cf_project_voice_t *v=&player->voice[i];
++        if(v->active && v->end_tick<=player->cursor.tick) {
++            cf_project_action_t a={v->track,v->note,0,0};visit(context,&a);count++;v->active=0;
++        }
++    }
++    for(unsigned track=0;track<2;track++) {
++        const cf_project_event_t *hits[CF_PROJECT_MAX_EVENTS];
++        unsigned n=cf_project_playback_events(p,&player->cursor,track,hits,CF_PROJECT_MAX_EVENTS);
++        for(unsigned j=0;j<n;j++) {
++            const cf_project_event_t *e=hits[j];
++            uint32_t mix=player->cursor.tick*2654435761u+(uint32_t)(j+1u)*2246822519u+(uint32_t)(track+1u)*3266489917u;
++            if(e->probability==0 || (mix%100u)>=e->probability)continue;
++            unsigned slot=CF_PROJECT_PLAYER_VOICES;
++            for(unsigned k=0;k<CF_PROJECT_PLAYER_VOICES;k++)if(!player->voice[k].active){slot=k;break;}
++            if(slot==CF_PROJECT_PLAYER_VOICES)continue;
++            cf_project_action_t a={(uint8_t)track,e->note,e->velocity,1};visit(context,&a);count++;
++            player->voice[slot].active=1;player->voice[slot].track=(uint8_t)track;
++            player->voice[slot].note=e->note;player->voice[slot].velocity=e->velocity;
++            player->voice[slot].end_tick=player->cursor.tick+e->duration_ticks;
++        }
++    }
++    if(!cf_project_playback_advance(p,&player->cursor,1) || player->cursor.ended) {
++        count+=cf_project_player_stop_visit(player,visit,context);
++    }
++    return count;
++}
++
+ int cf_project_valid(const cf_project_t *p)
+ {
+     if(!p || !cp_text(p->name,CF_PROJECT_NAME,1) || !p->section_count ||
+--- a/firmware/src/cf_project.h
++++ b/firmware/src/cf_project.h
+@@ -63,6 +63,7 @@
+ typedef struct {
+     uint8_t track, note, velocity, on;
+ } cf_project_action_t;
++typedef void (*cf_project_action_fn)(void *context, const cf_project_action_t *action);
+ 
+ typedef struct cf_project_s {
+     char name[CF_PROJECT_NAME];
+@@ -85,6 +86,14 @@
+  * until stop. Actions are ordered note-offs, then note-ons. */
+ int cf_project_player_start(cf_project_player_t *player, const cf_project_t *project, uint32_t tick);
+ unsigned cf_project_player_tick(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
++/* ISR-friendly visitor form: actions are applied one at a time, avoiding a large stack buffer. */
++unsigned cf_project_player_tick_visit(cf_project_player_t *player, cf_project_action_fn visit, void *context);
++unsigned cf_project_player_stop_visit(cf_project_player_t *player, cf_project_action_fn visit, void *context);
++/* Live bridge, implemented by cf_accomp.c. Requires the existing accompaniment
++ * transport to be running; player storage must live in .pool and remain valid. */
++int cf_project_live_start(cf_project_player_t *player, const cf_project_t *project, uint32_t tick);
++void cf_project_live_stop(void);
++int cf_project_live_playing(void);
+ unsigned cf_project_player_stop(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
+ int cf_project_player_seek(cf_project_player_t *player, uint32_t tick, cf_project_action_t *actions, unsigned capacity, unsigned *released);
+ /* Returns matching onset count copied into out (may be zero); returned pointers
+--- a/tests/cf_project_test.c
++++ b/tests/cf_project_test.c
+@@ -144,6 +144,38 @@
+     CHECK(cf_project_player_stop(&player,actions,CF_PROJECT_PLAYER_ACTIONS)==0);
+ }
+ 
++typedef struct { cf_project_action_t action[16]; unsigned count; } action_log_t;
++static void action_log(void *context,const cf_project_action_t *action)
++{
++    action_log_t *log=(action_log_t *)context;
++    if(log->count<16)log->action[log->count]=*action;
++    log->count++;
++}
++static void visitor_scheduler(void)
++{
++    cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=1;
++    cf_project_event_t m=event(0,0,64);m.duration_ticks=2;
++    cf_project_event_t b=event(0,0,40);b.duration_ticks=1;
++    CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&m));
++    CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&b));
++    cf_project_player_t player;action_log_t log={0};
++    CHECK(cf_project_player_start(&player,&p,0));
++    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==2);
++    CHECK(log.count==2 && log.action[0].on && log.action[1].on);
++    CHECK(log.action[0].track==CF_PROJECT_MELODY && log.action[1].track==CF_PROJECT_BASS);
++    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==1);
++    CHECK(!log.action[2].on && log.action[2].note==40);
++    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==1);
++    CHECK(!log.action[3].on && log.action[3].note==64);
++    CHECK(cf_project_player_stop_visit(&player,action_log,&log)==0);
++    CHECK(!player.playing && !player.project);
++
++    CHECK(cf_project_player_start(&player,&p,0));log.count=0;
++    CHECK(cf_project_player_tick_visit(&player,action_log,&log)==2);
++    CHECK(cf_project_player_stop_visit(&player,action_log,&log)==2);
++    CHECK(log.count==4 && !log.action[2].on && !log.action[3].on);
++}
++
+ static void maximum_wire(void)
+ {
+     cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=8;
+@@ -156,6 +188,6 @@
+ }
+ int main(void)
+ {
+-    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();player_scheduler();maximum_wire();
++    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();player_scheduler();visitor_scheduler();maximum_wire();
+     printf("multi-section project: %u checks, %u failures\n",checks,failures);return failures!=0;
+ }
+--- a/docs/ARRANGEMENT-PHASE4.md
++++ b/docs/ARRANGEMENT-PHASE4.md
+@@ -0,0 +1,28 @@
++# Arrangement Phase 4 — live accompaniment-clock bridge
++
++Phase 4 connects the arrangement event scheduler to CoralFlower's existing audio/MIDI note path without creating another clock.
++
++## Runtime API
++
++`cf_project.h` declares:
++
++- `cf_project_live_start(player, project, tick)` — starts the project event tracks at an absolute arrangement tick.
++- `cf_project_live_stop()` — releases every active arrangement note and detaches the player.
++- `cf_project_live_playing()` — reports whether the attached arrangement player is still running.
++
++The live bridge is implemented in `cf_accomp.c`. Start requires the existing catalogue accompaniment transport to be running. Each `cpa_tick1()` call advances the project player by one 96-PPQN tick, so arrangement events share the accompaniment's internal clock, tempo, MIDI-clock input, and drift behavior. Melody events are sent to the existing LAYER part (part 2); bass events use the existing BASS part (part 1). Both go through `cfp_on` / `cfp_off`, so the current engine voice and configured MIDI-note output paths are used.
++
++The bridge stops and releases its notes when the accompaniment releases/stops, including external-clock loss and transport stop. Natural project completion also releases active notes and detaches the player.
++
++## Ownership and memory
++
++The caller owns the `cf_project_t` and `cf_project_player_t`. Both must remain valid while live playback is active, and the project must not be edited during playback. The caller should place the long-lived objects in the firmware's `.pool` storage; do not add a global `.bss` project/player instance. On the host ABI used by tests, `sizeof(cf_project_t)` is 4,420 bytes and `sizeof(cf_project_player_t)` is 1,432 bytes. Target ABI sizes should be confirmed by the target build.
++
++The visitor scheduler (`cf_project_player_tick_visit`) emits each note action immediately through a callback. It avoids allocating the 1,408-byte maximum action array on the audio ISR stack. The original buffered scheduler remains available for host tests and offline consumers.
++
++## Current limits
++
++- This is a firmware API bridge, not an on-device arrangement editor or transport screen; no UI calls `cf_project_live_start` yet.
++- The project's chord phrases and drum-pattern references are still semantic arrangement data. This phase schedules only the independent melody and bass event tracks; it does not yet swap the catalogue chord plan or drum groove at section boundaries.
++- The project bass track shares the existing BASS engine part with CORD's accompaniment bass. They therefore share the part's sound and MIDI channel; a future mixer/track ownership pass should make that relationship explicit.
++- Flash persistence and Standard MIDI File export remain future phases.
+--- a/docs/ARRANGEMENT-PHASE4-README.md
++++ b/docs/ARRANGEMENT-PHASE4-README.md
+@@ -0,0 +1,28 @@
++# CORD Chord Studio — Phase 4
++
++This increment connects the Phase 3 melody/bass event scheduler to the existing accompaniment clock and note renderer.
++
++See [`ARRANGEMENT-PHASE4.md`](ARRANGEMENT-PHASE4.md) for API, ownership, timing, routing, and limitations.
++
++## Changed files
++
++- `firmware/src/cf_project.h` — visitor scheduler and live bridge API declarations.
++- `firmware/src/cf_project.c` — callback-based scheduler and stop visitor (no large ISR action array).
++- `firmware/src/cf_accomp.c` — shared-clock bridge into `cfp_on` / `cfp_off`.
++- `tests/cf_project_test.c` — callback ordering, note-off, and stop tests.
++
++## Validation
++
++- Project suite: 43,626 checks, 0 failures.
++- ASan + UBSan project suite: passed.
++- Song suite: 62,449 checks, 0 failures.
++- Songs library suite: 2,136 checks, 0 failures.
++- Storage log suite: 54,660 checks, 0 failures.
++- Native editor suite: 3,144 checks, 0 failures.
++- Editor storage log suite: 10,690 checks, 0 failures.
++- Accompaniment workspace: 730 checks, 0 failures.
++- Progression library: 80,519 checks, 0 failures.
++- Progression suggestions: 933 checks, 0 failures.
++- Headless firmware emulator: passed after generating the repository's generated headers.
++
++A target FM-1 hardware build and device test have not been performed. The bridge is an API, not yet connected to an on-device arrangement UI. It schedules independent melody/bass events only; automatic section phrase/drum-plan switching, flash persistence, and SMF export remain future work.

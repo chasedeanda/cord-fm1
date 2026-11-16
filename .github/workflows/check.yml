@@ -133,6 +133,9 @@ jobs:
       - name: Semantic phrase, protected draft and wire-format validation
         run: sh tools/test_song.sh
 
+      - name: Multi-section project model
+        run: sh tools/test_project.sh
+
       - name: Accompaniment workspace, play once, clock loss and Click preferences
         run: sh tools/test_accomp_workspace.sh
 

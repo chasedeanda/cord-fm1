@@ -1,0 +1,221 @@
+diff -ruN '--exclude=build' a/docs/ARRANGEMENT-PHASE3.md b/docs/ARRANGEMENT-PHASE3.md
+--- a/docs/ARRANGEMENT-PHASE3.md	1970-01-01 00:00:00.000000000 +0000
++++ b/docs/ARRANGEMENT-PHASE3.md	2026-11-15 06:17:54.449006296 +0000
+@@ -0,0 +1,35 @@
++# Arrangement Phase 3 — deterministic MIDI event scheduler
++
++Phase 3 adds a bounded event scheduler for the CPJ1 arrangement model. It is
++independent of the existing CORD accompaniment renderer: it produces note
++actions, but does not yet call the audio engine or take ownership of transport.
++This separation allows the event semantics to be tested before connecting them
++to the FM-1's live scheduler.
++
++## API
++
++- `cf_project_player_start(player, project, tick)` starts at an absolute song tick.
++- `cf_project_player_tick(player, actions, capacity)` advances exactly one
++  96-PPQN tick and returns note actions for that tick.
++- `cf_project_player_seek(...)` releases active notes and repositions.
++- `cf_project_player_stop(...)` emits note-offs for every active voice.
++
++The project must remain alive and unchanged while the player references it.
++The scheduler has a fixed 176-voice table (88 melody + 88 bass) and a maximum
++352-action output buffer. `tick` requires the full action capacity; `seek` and
++`stop` require 176 slots. There is no allocation, file I/O, or variable-length
++work buffer.
++
++Actions identify melody (`CF_PROJECT_MELODY`) and bass
++(`CF_PROJECT_BASS`) separately. Event probability is deterministic for a given
++song tick and event index, so seeking/replaying produces repeatable results.
++At a shared tick, note-offs are emitted before note-ons. Section repeats replay
++the same section-relative events; section boundaries follow the Phase 2 cursor.
++
++## Deliberate non-goals
++
++This phase does not yet connect actions to `cfp_on`/`cfp_off`, MIDI output, or
++`cpa_tick1`; it does not add device UI, flash persistence, SMF export, or
++real-time clock ownership. Those require a separate integration pass and
++hardware timing validation. Existing CSG1/CSL1 records and flash allocation are
++unchanged.
+diff -ruN '--exclude=build' a/firmware/src/cf_project.c b/firmware/src/cf_project.c
+--- a/firmware/src/cf_project.c	2026-11-15 05:10:22.000000000 +0000
++++ b/firmware/src/cf_project.c	2026-11-15 06:17:54.307816348 +0000
+@@ -108,6 +108,79 @@
+     return found<capacity?found:capacity;
+ }
+ 
++static unsigned cp_player_release(cf_project_player_t *player,cf_project_action_t *actions,unsigned capacity)
++{
++    unsigned count=0;
++    for(unsigned i=0;i<CF_PROJECT_PLAYER_VOICES;i++)if(player->voice[i].active) {
++        if(count<capacity)actions[count]=(cf_project_action_t){player->voice[i].track,player->voice[i].note,0,0};
++        count++;player->voice[i].active=0;
++    }
++    return count<capacity?count:capacity;
++}
++
++int cf_project_player_start(cf_project_player_t *player,const cf_project_t *p,uint32_t tick)
++{
++    if(!player || !cf_project_valid(p))return 0;
++    cf_project_cursor_t cursor;if(!cf_project_playback_seek(p,&cursor,tick))return 0;
++    memset(player,0,sizeof *player);player->project=p;player->cursor=cursor;
++    player->playing=(uint8_t)!cursor.ended;return 1;
++}
++
++unsigned cf_project_player_stop(cf_project_player_t *player,cf_project_action_t *actions,unsigned capacity)
++{
++    if(!player || !actions || capacity<CF_PROJECT_PLAYER_VOICES)return 0;
++    unsigned n=cp_player_release(player,actions,capacity);player->playing=0;player->project=0;
++    return n;
++}
++
++int cf_project_player_seek(cf_project_player_t *player,uint32_t tick,cf_project_action_t *actions,
++                           unsigned capacity,unsigned *released)
++{
++    if(released)*released=0;
++    if(!player || !player->project || !actions || capacity<CF_PROJECT_PLAYER_VOICES)return 0;
++    cf_project_cursor_t cursor;if(!cf_project_playback_seek(player->project,&cursor,tick))return 0;
++    unsigned n=cp_player_release(player,actions,capacity);
++    if(released)*released=n;
++    player->cursor=cursor;player->playing=(uint8_t)!cursor.ended;
++    return 1;
++}
++
++unsigned cf_project_player_tick(cf_project_player_t *player,cf_project_action_t *actions,unsigned capacity)
++{
++    if(!player || !player->playing || !player->project || !actions || capacity<CF_PROJECT_PLAYER_ACTIONS)return 0;
++    const cf_project_t *p=player->project;unsigned count=0;
++    /* Note-offs are emitted before new onsets at the same tick. */
++    for(unsigned i=0;i<CF_PROJECT_PLAYER_VOICES;i++) {
++        cf_project_voice_t *v=&player->voice[i];
++        if(v->active && v->end_tick<=player->cursor.tick) {
++            if(count<capacity)actions[count]=(cf_project_action_t){v->track,v->note,0,0};
++            count++;v->active=0;
++        }
++    }
++    for(unsigned track=0;track<2;track++) {
++        const cf_project_event_t *hits[CF_PROJECT_MAX_EVENTS];
++        unsigned n=cf_project_playback_events(p,&player->cursor,track,hits,CF_PROJECT_MAX_EVENTS);
++        for(unsigned j=0;j<n;j++) {
++            const cf_project_event_t *e=hits[j];
++            uint32_t mix=player->cursor.tick*2654435761u+(uint32_t)(j+1u)*2246822519u+(uint32_t)(track+1u)*3266489917u;
++            if(e->probability==0 || (mix%100u)>=e->probability)continue;
++            unsigned slot=CF_PROJECT_PLAYER_VOICES;
++            for(unsigned k=0;k<CF_PROJECT_PLAYER_VOICES;k++)if(!player->voice[k].active){slot=k;break;}
++            if(slot==CF_PROJECT_PLAYER_VOICES)continue;
++            if(count<capacity)actions[count]=(cf_project_action_t){(uint8_t)track,e->note,e->velocity,1};
++            count++;
++            player->voice[slot].active=1;player->voice[slot].track=(uint8_t)track;
++            player->voice[slot].note=e->note;player->voice[slot].velocity=e->velocity;
++            player->voice[slot].end_tick=player->cursor.tick+e->duration_ticks;
++        }
++    }
++    if(count>capacity)return capacity;
++    if(!cf_project_playback_advance(p,&player->cursor,1) || player->cursor.ended) {
++        count+=cp_player_release(player,actions+count,capacity-count);player->playing=0;
++    }
++    return count<capacity?count:capacity;
++}
++
+ int cf_project_valid(const cf_project_t *p)
+ {
+     if(!p || !cp_text(p->name,CF_PROJECT_NAME,1) || !p->section_count ||
+diff -ruN '--exclude=build' a/firmware/src/cf_project.h b/firmware/src/cf_project.h
+--- a/firmware/src/cf_project.h	2026-11-15 05:10:08.000000000 +0000
++++ b/firmware/src/cf_project.h	2026-11-15 06:17:54.308708326 +0000
+@@ -48,7 +48,23 @@
+     uint8_t ended;
+ } cf_project_cursor_t;
+ 
++#define CF_PROJECT_PLAYER_VOICES (2u * CF_PROJECT_MAX_EVENTS)
++#define CF_PROJECT_PLAYER_ACTIONS (2u * CF_PROJECT_PLAYER_VOICES)
+ typedef struct {
++    uint32_t end_tick;
++    uint8_t note, track, velocity, active;
++} cf_project_voice_t;
++typedef struct {
++    const struct cf_project_s *project;
++    cf_project_cursor_t cursor;
++    cf_project_voice_t voice[CF_PROJECT_PLAYER_VOICES];
++    uint8_t playing;
++} cf_project_player_t;
++typedef struct {
++    uint8_t track, note, velocity, on;
++} cf_project_action_t;
++
++typedef struct cf_project_s {
+     char name[CF_PROJECT_NAME];
+     uint8_t section_count, selected_section;
+     uint8_t melody_count, bass_count;
+@@ -63,6 +79,14 @@
+ /* Deterministic arrangement transport. No allocation, I/O, or audio calls. */
+ int cf_project_playback_seek(const cf_project_t *project, cf_project_cursor_t *cursor, uint32_t tick);
+ int cf_project_playback_advance(const cf_project_t *project, cf_project_cursor_t *cursor, uint32_t ticks);
++/* Fixed-capacity event scheduler. One call represents one 96-PPQN tick.
++ * tick requires CF_PROJECT_PLAYER_ACTIONS output slots; stop/seek require
++ * CF_PROJECT_PLAYER_VOICES. The referenced project must remain immutable/alive
++ * until stop. Actions are ordered note-offs, then note-ons. */
++int cf_project_player_start(cf_project_player_t *player, const cf_project_t *project, uint32_t tick);
++unsigned cf_project_player_tick(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
++unsigned cf_project_player_stop(cf_project_player_t *player, cf_project_action_t *actions, unsigned capacity);
++int cf_project_player_seek(cf_project_player_t *player, uint32_t tick, cf_project_action_t *actions, unsigned capacity, unsigned *released);
+ /* Returns matching onset count copied into out (may be zero); returned pointers
+  * refer to the immutable project and remain valid until it is edited. */
+ unsigned cf_project_playback_events(const cf_project_t *project, const cf_project_cursor_t *cursor,
+diff -ruN '--exclude=build' a/tests/cf_project_test.c b/tests/cf_project_test.c
+--- a/tests/cf_project_test.c	2026-11-15 05:10:26.000000000 +0000
++++ b/tests/cf_project_test.c	2026-11-15 06:17:04.392825847 +0000
+@@ -110,6 +110,40 @@
+     CHECK(!cf_project_playback_events(&p,&c,CF_PROJECT_MELODY,hits,4)); /* forged cursor rejected */
+ }
+ 
++static void player_scheduler(void)
++{
++    cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=1;
++    cf_project_event_t m=event(0,0,60);m.duration_ticks=2;
++    cf_project_event_t b=event(0,1,36);b.duration_ticks=1;
++    CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&m));
++    CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&b));
++    cf_project_player_t player;cf_project_action_t actions[CF_PROJECT_PLAYER_ACTIONS];
++    CHECK(cf_project_player_start(&player,&p,0));CHECK(player.playing);
++    unsigned n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);
++    CHECK(n==1 && actions[0].on && actions[0].track==CF_PROJECT_MELODY && actions[0].note==60);
++    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);
++    CHECK(n==1 && actions[0].on && actions[0].track==CF_PROJECT_BASS && actions[0].note==36);
++    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);
++    CHECK(n==2);CHECK(!actions[0].on && actions[0].note==60);CHECK(!actions[1].on && actions[1].note==36);
++    CHECK(player.playing && player.cursor.tick==3);
++    unsigned released=0;CHECK(cf_project_player_seek(&player,20,actions,CF_PROJECT_PLAYER_ACTIONS,&released));
++    CHECK(released==0 && player.cursor.tick==20);
++    n=cf_project_player_stop(&player,actions,CF_PROJECT_PLAYER_ACTIONS);CHECK(n==0 && !player.playing);
++    CHECK(!cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS));
++
++    /* Seeking while notes sound emits balanced note-offs before repositioning. */
++    CHECK(cf_project_player_start(&player,&p,0));
++    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);CHECK(n==1 && actions[0].on);
++    CHECK(cf_project_player_seek(&player,12,actions,CF_PROJECT_PLAYER_ACTIONS,&released));
++    CHECK(released==1 && !actions[0].on && actions[0].note==60);
++
++    /* A zero-probability event is intentionally silent. */
++    p.melody[0].probability=0;CHECK(cf_project_valid(&p));
++    CHECK(cf_project_player_start(&player,&p,0));
++    n=cf_project_player_tick(&player,actions,CF_PROJECT_PLAYER_ACTIONS);CHECK(n==0);
++    CHECK(cf_project_player_stop(&player,actions,CF_PROJECT_PLAYER_ACTIONS)==0);
++}
++
+ static void maximum_wire(void)
+ {
+     cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=8;
+@@ -122,6 +156,6 @@
+ }
+ int main(void)
+ {
+-    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();maximum_wire();
++    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();player_scheduler();maximum_wire();
+     printf("multi-section project: %u checks, %u failures\n",checks,failures);return failures!=0;
+ }
+Binary files a/tools/__pycache__/aa_raster.cpython-313.pyc and b/tools/__pycache__/aa_raster.cpython-313.pyc differ
+Binary files a/tools/__pycache__/build.cpython-313.pyc and b/tools/__pycache__/build.cpython-313.pyc differ
+Binary files a/tools/__pycache__/fm1pkg_make.cpython-313.pyc and b/tools/__pycache__/fm1pkg_make.cpython-313.pyc differ
+Binary files a/tools/__pycache__/lz4blk.cpython-313.pyc and b/tools/__pycache__/lz4blk.cpython-313.pyc differ
+Binary files a/tools/__pycache__/sampleio.cpython-313.pyc and b/tools/__pycache__/sampleio.cpython-313.pyc differ

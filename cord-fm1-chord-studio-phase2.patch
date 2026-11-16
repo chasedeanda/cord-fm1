@@ -1,0 +1,726 @@
+diff -ruN a/.github/workflows/check.yml b/.github/workflows/check.yml
+--- a/.github/workflows/check.yml	2026-11-10 22:32:10.000000000 +0000
++++ b/.github/workflows/check.yml	2026-11-15 04:47:47.304617813 +0000
+@@ -133,6 +133,9 @@
+       - name: Semantic phrase, protected draft and wire-format validation
+         run: sh tools/test_song.sh
+ 
++      - name: Multi-section project model
++        run: sh tools/test_project.sh
++
+       - name: Accompaniment workspace, play once, clock loss and Click preferences
+         run: sh tools/test_accomp_workspace.sh
+ 
+diff -ruN a/docs/ARRANGEMENT-PHASE1.md b/docs/ARRANGEMENT-PHASE1.md
+--- a/docs/ARRANGEMENT-PHASE1.md	1970-01-01 00:00:00.000000000 +0000
++++ b/docs/ARRANGEMENT-PHASE1.md	2026-11-15 04:50:33.901404375 +0000
+@@ -0,0 +1,89 @@
++# CORD Chord Studio — Phase 1 project model
++
++This phase adds a versioned, multi-section project model without changing the
++existing `cf_song_t` / `CSG1` phrase format or the six saved-idea records.
++
++## Model
++
++- `cf_project_t` is the composition container.
++- A project has up to six named sections.
++- Each section embeds one existing `cf_song_t` phrase, preserving the existing
++  chord-slot, key, scale, meter, tempo, rhythm and voicing semantics.
++- Melody and bass are independent event arrays. Events are section-relative;
++  the shared playback clock can later concatenate sections and apply repeats.
++- Each section references a drum pattern ID, `CF_PROJECT_DRUM_FOLLOW`, or
++  `CF_PROJECT_DRUM_OFF`. Existing drum playback remains the implementation.
++- Event probability is 0–100. Event flags currently reserve accent, tie,
++  legato and chromatic markers.
++- `cf_project_section_ticks` and `cf_project_total_ticks` derive the arranged
++  duration from each embedded phrase and its section repeat count. Events are
++  rejected if they extend beyond their section's phrase duration.
++
++## CPJ1 wire format
++
++`cf_project_encode` / `cf_project_decode` implement CPJ1 version 1. The record
++is variable-length, little-endian, checksummed, and strictly bounded.
++
++| Limit | Value |
++|---|---:|
++| Sections | 6 |
++| Melody events | 88 |
++| Bass events | 88 |
++| Section phrase | Existing 344-byte CSG1 record |
++| Section header | 20 bytes |
++| Event record | 9 bytes |
++| Maximum encoded size | 3,808 bytes |
++| One-object payload budget | 3,840 bytes |
++
++The six-section limit and 88-event-per-track limit are intentional: the
++maximum CPJ1 record fits one existing 4 KiB flash object payload, with 32 bytes
++of headroom. No new flash object ID or saved-song migration is allocated in
++this phase. The existing `CSL1` saved-idea records remain unchanged.
++
++Event records encode a 24-bit section-relative start tick, 16-bit duration,
++note, velocity, probability, and a packed nibble for section index / flags.
++This supports long sections without expanding the event record.
++
++## Memory and real-time constraints
++
++The host `sizeof` measurements for this revision are:
++
++- `sizeof(cf_song_t)`: 360 bytes
++- `sizeof(cf_project_section_t)`: 380 bytes
++- `sizeof(cf_project_event_t)`: 12 bytes
++- `sizeof(cf_project_t)`: 4,420 bytes
++
++The project object must not be placed in ordinary `.bss`: the checked-in
++resource audit reports only 1,528 bytes of ordinary-RAM headroom on its
++measured baseline. When a project is integrated into the firmware, place the
++single working project in the existing `.pool` region and account for any
++serialization scratch buffer against the measured POOL headroom. The project
++model does not allocate memory, write flash, or schedule audio from an ISR.
++
++`cf_project_init` and `cf_project_decode` use only a `cf_song_t`-sized local
++scratch object; they do not place a whole `cf_project_t` on the stack. Decode
++preflights the complete record before changing the caller's project.
++
++## Compatibility
++
++- `CSG1` remains version 1 and 344 bytes.
++- Existing six `CSL1` saved ideas are untouched.
++- Existing draft/checkpoint and backup IDs are untouched.
++- CPJ1 has a separate magic and version; unsupported or corrupt records are
++  rejected without modifying the destination project.
++- No flash object is claimed by Phase 1. A later storage phase must choose a
++  safe object / slot policy and add backup, recovery, interrupted-write and
++  migration tests before enabling device persistence.
++
++## Host verification
++
++Run:
++
++```sh
++sh tools/test_project.sh
++sh tools/test_song.sh
++```
++
++The project suite tests section insertion/removal, event ownership and
++renumbering, capacity failure atomicity, maximum-size encoding, round trips,
++short buffers, and corruption rejection.
+diff -ruN a/docs/ARRANGEMENT-PHASE2.md b/docs/ARRANGEMENT-PHASE2.md
+--- a/docs/ARRANGEMENT-PHASE2.md	1970-01-01 00:00:00.000000000 +0000
++++ b/docs/ARRANGEMENT-PHASE2.md	2026-11-15 05:11:05.048460015 +0000
+@@ -0,0 +1,52 @@
++# CORD Chord Studio — Phase 2 arrangement timeline
++
++Phase 2 adds a deterministic playback cursor over the Phase 1 multi-section
++project model. It deliberately does not yet replace or modify CORD's live
++`cf_accomp.c` scheduler.
++
++## Playback cursor
++
++`cf_project_cursor_t` tracks:
++
++- absolute song tick (`tick`)
++- zero-based section index (`section`)
++- zero-based repeat occurrence within that section (`repeat`)
++- tick within the current section occurrence (`section_tick`)
++- terminal state (`ended`)
++
++The valid terminal position is exactly `cf_project_total_ticks(project)`. Seeking
++past the end fails; advancing past the end saturates at the terminal position.
++
++## API
++
++- `cf_project_playback_seek(project, cursor, tick)` maps an absolute tick to its
++  section, repeat occurrence, and local tick.
++- `cf_project_playback_advance(project, cursor, ticks)` advances by a bounded
++  number of ticks and saturates at the end.
++- `cf_project_playback_events(project, cursor, track, out, capacity)` returns
++  pointers to events whose `start_tick` equals the cursor's section-local tick.
++  The returned pointers refer to the project and must not be retained across
++  edits. The function returns the number of pointers copied, capped by capacity.
++
++The timeline is deterministic and has no allocation, storage, audio, or ISR
++side effects. It revalidates cursor position before event lookup, rejecting
++forged or stale section/repeat/local-tick fields.
++
++## Integration boundary
++
++The existing accompaniment scheduler in `cf_accomp.c` owns a shared 96-PPQN
++clock, chord onset and gate handling, drum groove scheduling, MIDI clock
++handling, and live-edit mailboxes. Phase 2 does not inject melody/bass events
++into that scheduler yet. Doing so safely requires bounded note-on/note-off
++queues, ownership rules for the existing chord/bass voices, transport stop/pause
++semantics, and a UI snapshot handoff. Those are deferred rather than guessed.
++
++Project persistence is also still deferred. No flash object ID is allocated;
++CSG1 and CSL1 remain unchanged.
++
++## Verification
++
++`sh tools/test_project.sh` includes section/repeat boundary, event onset,
++seek, saturation, terminal state, and invalid-cursor tests. Existing song,
++library, editor, and accompaniment workspace suites remain independent and
++are rerun alongside the project suite.
+diff -ruN a/firmware/src/cf_project.c b/firmware/src/cf_project.c
+--- a/firmware/src/cf_project.c	1970-01-01 00:00:00.000000000 +0000
++++ b/firmware/src/cf_project.c	2026-11-15 05:10:22.508994705 +0000
+@@ -0,0 +1,312 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++#include "cf_project.h"
++#if !defined(CF_UNIT) && !defined(CF_EMU)
++#include <string.h>
++#endif
++
++static void cp_u16(uint8_t *p, unsigned v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); }
++static unsigned cp_r16(const uint8_t *p) { return (unsigned)p[0] | (unsigned)p[1]<<8; }
++static void cp_u24(uint8_t *p, uint32_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); }
++static uint32_t cp_r24(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16; }
++static void cp_u32(uint8_t *p, uint32_t v) { for(unsigned i=0;i<4;i++)p[i]=(uint8_t)(v>>(8u*i)); }
++static uint32_t cp_r32(const uint8_t *p) { uint32_t v=0;for(unsigned i=0;i<4;i++)v|=(uint32_t)p[i]<<(8u*i);return v; }
++static uint32_t cp_hash(const uint8_t *p, unsigned n)
++{ uint32_t h=2166136261u;while(n--){h^=*p++;h*=16777619u;}return h; }
++static int cp_text(const char *s, unsigned cap, int required)
++{
++    unsigned end=0;
++    for(unsigned i=0;i<cap;i++) {
++        unsigned c=(uint8_t)s[i];
++        if(!c){end=1;if(required && !i)return 0;continue;}
++        if(end || c<32 || c>126)return 0;
++    }
++    return end;
++}
++static void cp_section_name(char *dst, unsigned index)
++{
++    static const char digits[]="123456";
++    const char prefix[]="Section ";unsigned i=0;
++    while(i<sizeof prefix-1){dst[i]=prefix[i];i++;}
++    dst[i++]=digits[index<6?index:5];dst[i]=0;
++}
++static unsigned cp_track_count(const cf_project_t *p,unsigned track)
++{ return track==CF_PROJECT_MELODY?p->melody_count:p->bass_count; }
++static cf_project_event_t *cp_track_events(cf_project_t *p,unsigned track)
++{ return track==CF_PROJECT_MELODY?p->melody:p->bass; }
++static const cf_project_event_t *cp_track_events_const(const cf_project_t *p,unsigned track)
++{ return track==CF_PROJECT_MELODY?p->melody:p->bass; }
++
++static uint32_t cp_phrase_ticks(const cf_song_t *song)
++{
++    uint32_t ticks=0;
++    for(unsigned i=0;i<song->n;i++) {
++        const cf_song_slot_t *slot=&song->slot[i];
++        ticks+=slot->unit==CF_SONG_BARS?(uint32_t)slot->bars*song->beats*96u:
++            (uint32_t)slot->quarters*96u*(song->beats==6?2u:1u)/4u;
++    }
++    return ticks;
++}
++
++uint32_t cf_project_section_ticks(const cf_project_t *p,unsigned section)
++{
++    if(!p || section>=p->section_count || !cf_song_valid(&p->section[section].phrase))return 0;
++    return cp_phrase_ticks(&p->section[section].phrase);
++}
++
++uint32_t cf_project_total_ticks(const cf_project_t *p)
++{
++    if(!p || !p->section_count || p->section_count>CF_PROJECT_MAX_SECTIONS)return 0;
++    uint32_t total=0;
++    for(unsigned i=0;i<p->section_count;i++) {
++        uint32_t ticks=cf_project_section_ticks(p,i);
++        if(!ticks)return 0;
++        total+=ticks*p->section[i].repeats;
++    }
++    return total;
++}
++
++int cf_project_playback_seek(const cf_project_t *p,cf_project_cursor_t *c,uint32_t tick)
++{
++    if(!c || !cf_project_valid(p))return 0;
++    uint32_t total=cf_project_total_ticks(p);
++    if(tick>total)return 0;
++    memset(c,0,sizeof *c);c->tick=tick;
++    if(tick==total){c->ended=1;c->section=(uint8_t)(p->section_count-1u);
++        c->repeat=(uint8_t)(p->section[c->section].repeats-1u);
++        c->section_tick=cf_project_section_ticks(p,c->section);return 1;}
++    uint32_t left=tick;
++    for(unsigned i=0;i<p->section_count;i++) {
++        uint32_t span=cf_project_section_ticks(p,i),section_span=span*p->section[i].repeats;
++        if(left<section_span){c->section=(uint8_t)i;c->repeat=(uint8_t)(left/span);
++            c->section_tick=left%span;return 1;}
++        left-=section_span;
++    }
++    return 0;
++}
++
++int cf_project_playback_advance(const cf_project_t *p,cf_project_cursor_t *c,uint32_t ticks)
++{
++    if(!p || !c || !cf_project_valid(p) || c->tick>cf_project_total_ticks(p))return 0;
++    uint32_t total=cf_project_total_ticks(p);
++    uint32_t target=ticks>total-c->tick?total:c->tick+ticks;
++    return cf_project_playback_seek(p,c,target);
++}
++
++unsigned cf_project_playback_events(const cf_project_t *p,const cf_project_cursor_t *c,
++                                    unsigned track,const cf_project_event_t **out,unsigned capacity)
++{
++    if(!p || !c || !out || (track!=CF_PROJECT_MELODY && track!=CF_PROJECT_BASS))return 0;
++    cf_project_cursor_t expected;
++    if(!cf_project_playback_seek(p,&expected,c->tick) || expected.ended ||
++       expected.section!=c->section || expected.repeat!=c->repeat ||
++       expected.section_tick!=c->section_tick || c->ended)return 0;
++    const cf_project_event_t *events=cp_track_events_const(p,track);unsigned n=cp_track_count(p,track),found=0;
++    for(unsigned i=0;i<n;i++)if(events[i].section==c->section && events[i].start_tick==c->section_tick) {
++        if(found<capacity)out[found]=&events[i];
++        found++;
++    }
++    return found<capacity?found:capacity;
++}
++
++int cf_project_valid(const cf_project_t *p)
++{
++    if(!p || !cp_text(p->name,CF_PROJECT_NAME,1) || !p->section_count ||
++       p->section_count>CF_PROJECT_MAX_SECTIONS || p->selected_section>=p->section_count ||
++       p->melody_count>CF_PROJECT_MAX_EVENTS || p->bass_count>CF_PROJECT_MAX_EVENTS)return 0;
++    for(unsigned i=0;i<p->section_count;i++) {
++        const cf_project_section_t *s=&p->section[i];
++        if(!cp_text(s->name,CF_PROJECT_SECTION_NAME,1) || !s->repeats || s->repeats>16 ||
++           s->flags || !cf_song_valid(&s->phrase))return 0;
++    }
++    for(unsigned t=0;t<2;t++) {
++        unsigned n=cp_track_count(p,t);const cf_project_event_t *events=cp_track_events_const(p,t);
++        for(unsigned i=0;i<n;i++) {
++            const cf_project_event_t *e=&events[i];
++            if(e->start_tick>0xFFFFFFu || !e->duration_ticks || e->note>127 || e->velocity>127 ||
++               e->probability>100 || e->section>=p->section_count || (e->flags&~CF_PROJECT_EVENT_FLAGS) ||
++               e->start_tick+e->duration_ticks>cp_phrase_ticks(&p->section[e->section].phrase))return 0;
++        }
++        for(unsigned i=n;i<CF_PROJECT_MAX_EVENTS;i++) {
++            const uint8_t *b=(const uint8_t *)&events[i];
++            for(unsigned j=0;j<sizeof events[i];j++)if(b[j])return 0;
++        }
++    }
++    for(unsigned i=p->section_count;i<CF_PROJECT_MAX_SECTIONS;i++) {
++        const uint8_t *b=(const uint8_t *)&p->section[i];
++        for(unsigned j=0;j<sizeof p->section[i];j++)if(b[j])return 0;
++    }
++    return 1;
++}
++
++int cf_project_init(cf_project_t *p,const char *name,const cf_song_t *phrase)
++{
++    if(!p || !name || !phrase || !cf_song_valid(phrase))return 0;
++    char safe_name[CF_PROJECT_NAME]={0};unsigned name_len=0;
++    while(name_len<sizeof safe_name && name[name_len])name_len++;
++    if(!name_len || name_len>=sizeof safe_name)return 0;
++    memcpy(safe_name,name,name_len);
++    if(!cp_text(safe_name,sizeof safe_name,1))return 0;
++    cf_song_t phrase_copy=*phrase;
++    memset(p,0,sizeof *p);memcpy(p->name,safe_name,sizeof safe_name);
++    p->section_count=1;p->section[0].repeats=1;p->section[0].drum_pattern=CF_PROJECT_DRUM_FOLLOW;
++    cp_section_name(p->section[0].name,0);p->section[0].phrase=phrase_copy;
++    return cf_project_valid(p);
++}
++
++int cf_project_insert_section(cf_project_t *p,unsigned at,unsigned source,int duplicate)
++{
++    if(!cf_project_valid(p) || p->section_count>=CF_PROJECT_MAX_SECTIONS || at>p->section_count ||
++       (duplicate && source>=p->section_count))return 0;
++    unsigned mc=0,bc=0,original_m=p->melody_count,original_b=p->bass_count;
++    if(duplicate) {
++        for(unsigned i=0;i<p->melody_count;i++)if(p->melody[i].section==source)mc++;
++        for(unsigned i=0;i<p->bass_count;i++)if(p->bass[i].section==source)bc++;
++        if((unsigned)p->melody_count+mc>CF_PROJECT_MAX_EVENTS || (unsigned)p->bass_count+bc>CF_PROJECT_MAX_EVENTS)return 0;
++    }
++    cf_project_section_t value;
++    if(duplicate)value=p->section[source];
++    else {
++        memset(&value,0,sizeof value);value.repeats=1;value.drum_pattern=CF_PROJECT_DRUM_FOLLOW;
++        value.phrase=p->section[0].phrase;
++    }
++    for(unsigned i=p->section_count;i>at;i--)p->section[i]=p->section[i-1];
++    p->section[at]=value;p->section_count++;
++    if(!duplicate)cp_section_name(p->section[at].name,at);
++    for(unsigned i=0;i<p->melody_count;i++)if(p->melody[i].section>=at)p->melody[i].section++;
++    for(unsigned i=0;i<p->bass_count;i++)if(p->bass[i].section>=at)p->bass[i].section++;
++    if(duplicate) {
++        unsigned old_source=source+(source>=at?1u:0u);
++        /* Original events occupy the prefix; append copies after the index shift. */
++        for(unsigned i=0;i<original_m;i++)if(p->melody[i].section==old_source) {
++            cf_project_event_t e=p->melody[i];e.section=(uint8_t)at;p->melody[p->melody_count++]=e;
++        }
++        for(unsigned i=0;i<original_b;i++)if(p->bass[i].section==old_source) {
++            cf_project_event_t e=p->bass[i];e.section=(uint8_t)at;p->bass[p->bass_count++]=e;
++        }
++    }
++    if(p->selected_section>=at)p->selected_section++;
++    return cf_project_valid(p);
++}
++
++int cf_project_remove_section(cf_project_t *p,unsigned at)
++{
++    if(!cf_project_valid(p) || p->section_count<=1 || at>=p->section_count)return 0;
++    for(unsigned i=at;i+1<p->section_count;i++)p->section[i]=p->section[i+1];
++    p->section_count--;memset(&p->section[p->section_count],0,sizeof p->section[0]);
++    for(unsigned t=0;t<2;t++) {
++        unsigned count=cp_track_count(p,t),w=0;
++        cf_project_event_t *events=cp_track_events(p,t);
++        for(unsigned i=0;i<count;i++) {
++            cf_project_event_t e=events[i];if(e.section==at)continue;
++            if(e.section>at)e.section--;
++            events[w++]=e;
++        }
++        memset(events+w,0,(count-w)*sizeof events[0]);
++        if(t==CF_PROJECT_MELODY)p->melody_count=(uint8_t)w;else p->bass_count=(uint8_t)w;
++    }
++    if(p->selected_section==at)p->selected_section=(uint8_t)(at<(unsigned)p->section_count?at:(unsigned)p->section_count-1u);
++    else if(p->selected_section>at)p->selected_section--;
++    return cf_project_valid(p);
++}
++
++int cf_project_add_event(cf_project_t *p,unsigned track,const cf_project_event_t *event)
++{
++    if(!p || !event || (track!=CF_PROJECT_MELODY && track!=CF_PROJECT_BASS) || !cf_project_valid(p))return 0;
++    unsigned n=cp_track_count(p,track);if(n>=CF_PROJECT_MAX_EVENTS)return 0;
++    cf_project_event_t *events=cp_track_events(p,track);events[n]=*event;
++    if(track==CF_PROJECT_MELODY)p->melody_count++;else p->bass_count++;
++    if(!cf_project_valid(p)) {
++        if(track==CF_PROJECT_MELODY)p->melody_count--;else p->bass_count--;
++        memset(&events[n],0,sizeof events[n]);return 0;
++    }
++    return 1;
++}
++
++int cf_project_remove_event(cf_project_t *p,unsigned track,unsigned at)
++{
++    if(!cf_project_valid(p) || (track!=CF_PROJECT_MELODY && track!=CF_PROJECT_BASS))return 0;
++    unsigned n=cp_track_count(p,track);if(at>=n)return 0;
++    cf_project_event_t *events=cp_track_events(p,track);
++    for(unsigned i=at;i+1<n;i++)events[i]=events[i+1];
++    memset(&events[n-1],0,sizeof events[0]);
++    if(track==CF_PROJECT_MELODY)p->melody_count--;else p->bass_count--;return 1;
++}
++
++static void cp_event_encode(uint8_t *p,const cf_project_event_t *e)
++{
++    cp_u24(p,e->start_tick);cp_u16(p+3,e->duration_ticks);p[5]=e->note;p[6]=e->velocity;
++    p[7]=e->probability;p[8]=(uint8_t)((e->section<<4)|e->flags);
++}
++static void cp_event_decode(cf_project_event_t *e,const uint8_t *p)
++{
++    memset(e,0,sizeof *e);e->start_tick=cp_r24(p);e->duration_ticks=(uint16_t)cp_r16(p+3);
++    e->note=p[5];e->velocity=p[6];e->probability=p[7];e->section=p[8]>>4;e->flags=p[8]&15u;
++}
++
++int cf_project_encode(const cf_project_t *p,uint8_t *out,unsigned capacity,unsigned *written)
++{
++    if(written)*written=0;
++    if(!out || !written || !cf_project_valid(p))return 0;
++    unsigned size=CF_PROJECT_HEADER_WIRE+(unsigned)p->section_count*CF_PROJECT_SECTION_WIRE+
++        ((unsigned)p->melody_count+p->bass_count)*CF_PROJECT_EVENT_WIRE+4u;
++    if(size>CF_PROJECT_WIRE_MAX || capacity<size)return 0;
++    memset(out,0,size);out[0]='C';out[1]='P';out[2]='J';out[3]='1';out[4]=1;
++    out[5]=p->section_count;out[6]=p->melody_count;out[7]=p->bass_count;out[8]=p->selected_section;
++    cp_u16(out+10,size);memcpy(out+12,p->name,CF_PROJECT_NAME);
++    unsigned off=CF_PROJECT_HEADER_WIRE;
++    for(unsigned i=0;i<p->section_count;i++) {
++        const cf_project_section_t *s=&p->section[i];memcpy(out+off,s->name,CF_PROJECT_SECTION_NAME);
++        out[off+16]=s->repeats;out[off+17]=s->flags;cp_u16(out+off+18,s->drum_pattern);
++        if(!cf_song_encode(&s->phrase,out+off+20))return 0;
++        off+=CF_PROJECT_SECTION_WIRE;
++    }
++    for(unsigned t=0;t<2;t++) {
++        unsigned n=cp_track_count(p,t);const cf_project_event_t *events=cp_track_events_const(p,t);
++        for(unsigned i=0;i<n;i++){cp_event_encode(out+off,&events[i]);off+=CF_PROJECT_EVENT_WIRE;}
++    }
++    cp_u32(out+off,cp_hash(out,off));off+=4;*written=off;return 1;
++}
++
++int cf_project_decode(cf_project_t *p,const uint8_t *bytes,unsigned size)
++{
++    if(!p || !bytes || size<CF_PROJECT_HEADER_WIRE+4u || size>CF_PROJECT_WIRE_MAX ||
++       bytes[0]!='C' || bytes[1]!='P' || bytes[2]!='J' || bytes[3]!='1' || bytes[4]!=1 || bytes[9] ||
++       cp_r16(bytes+10)!=size || cp_r32(bytes+size-4)!=cp_hash(bytes,size-4))return 0;
++    unsigned ns=bytes[5],nm=bytes[6],nb=bytes[7];
++    if(!ns || ns>CF_PROJECT_MAX_SECTIONS || nm>CF_PROJECT_MAX_EVENTS || nb>CF_PROJECT_MAX_EVENTS ||
++       bytes[8]>=ns || size!=CF_PROJECT_HEADER_WIRE+ns*CF_PROJECT_SECTION_WIRE+(nm+nb)*CF_PROJECT_EVENT_WIRE+4u ||
++       !cp_text((const char *)bytes+12,CF_PROJECT_NAME,1))return 0;
++
++    /* Preflight the complete payload before touching the caller's project. */
++    unsigned off=CF_PROJECT_HEADER_WIRE;cf_song_t phrase_check;
++    uint32_t section_ticks[CF_PROJECT_MAX_SECTIONS]={0};
++    for(unsigned i=0;i<ns;i++) {
++        if(!cp_text((const char *)bytes+off,CF_PROJECT_SECTION_NAME,1) || !bytes[off+16] ||
++           bytes[off+16]>16 || bytes[off+17] ||
++           !cf_song_decode(&phrase_check,bytes+off+20,CF_SONG_WIRE))return 0;
++        section_ticks[i]=cp_phrase_ticks(&phrase_check);
++        off+=CF_PROJECT_SECTION_WIRE;
++    }
++    for(unsigned t=0;t<2;t++) {
++        unsigned n=t==0?nm:nb;
++        for(unsigned i=0;i<n;i++) {
++            cf_project_event_t e;cp_event_decode(&e,bytes+off);
++            if(!e.duration_ticks || e.note>127 || e.velocity>127 || e.probability>100 ||
++               e.section>=ns || (e.flags&~CF_PROJECT_EVENT_FLAGS) ||
++               e.start_tick+e.duration_ticks>section_ticks[e.section])return 0;
++            off+=CF_PROJECT_EVENT_WIRE;
++        }
++    }
++
++    memset(p,0,sizeof *p);memcpy(p->name,bytes+12,CF_PROJECT_NAME);
++    p->section_count=(uint8_t)ns;p->melody_count=(uint8_t)nm;p->bass_count=(uint8_t)nb;
++    p->selected_section=bytes[8];off=CF_PROJECT_HEADER_WIRE;
++    for(unsigned i=0;i<ns;i++) {
++        cf_project_section_t *s=&p->section[i];memcpy(s->name,bytes+off,CF_PROJECT_SECTION_NAME);
++        s->repeats=bytes[off+16];s->flags=bytes[off+17];s->drum_pattern=(uint16_t)cp_r16(bytes+off+18);
++        (void)cf_song_decode(&s->phrase,bytes+off+20,CF_SONG_WIRE);off+=CF_PROJECT_SECTION_WIRE;
++    }
++    for(unsigned i=0;i<nm;i++){cp_event_decode(&p->melody[i],bytes+off);off+=CF_PROJECT_EVENT_WIRE;}
++    for(unsigned i=0;i<nb;i++){cp_event_decode(&p->bass[i],bytes+off);off+=CF_PROJECT_EVENT_WIRE;}
++    return cf_project_valid(p);
++}
+diff -ruN a/firmware/src/cf_project.h b/firmware/src/cf_project.h
+--- a/firmware/src/cf_project.h	1970-01-01 00:00:00.000000000 +0000
++++ b/firmware/src/cf_project.h	2026-11-15 05:10:09.995373575 +0000
+@@ -0,0 +1,78 @@
++/* SPDX-License-Identifier: GPL-3.0-only
++ * Versioned multi-section project model. Existing CSG1 phrases remain unchanged.
++ */
++#ifndef CF_PROJECT_H
++#define CF_PROJECT_H
++#include "cf_song.h"
++
++#define CF_PROJECT_MAX_SECTIONS 6u
++#define CF_PROJECT_MAX_EVENTS 88u
++#define CF_PROJECT_NAME 24u
++#define CF_PROJECT_SECTION_NAME 16u
++#define CF_PROJECT_EVENT_WIRE 9u
++#define CF_PROJECT_HEADER_WIRE 36u
++#define CF_PROJECT_SECTION_WIRE (CF_PROJECT_SECTION_NAME + 4u + CF_SONG_WIRE)
++#define CF_PROJECT_WIRE_MAX (CF_PROJECT_HEADER_WIRE + CF_PROJECT_MAX_SECTIONS * CF_PROJECT_SECTION_WIRE + \
++                             2u * CF_PROJECT_MAX_EVENTS * CF_PROJECT_EVENT_WIRE + 4u)
++#define CF_PROJECT_STORAGE_PAYLOAD_MAX 3840u
++#if CF_PROJECT_WIRE_MAX > CF_PROJECT_STORAGE_PAYLOAD_MAX
++#error "CPJ1 project exceeds one 4 KiB flash object's payload"
++#endif
++#define CF_PROJECT_DRUM_FOLLOW 65535u
++#define CF_PROJECT_DRUM_OFF 65534u
++
++enum { CF_PROJECT_MELODY = 0, CF_PROJECT_BASS = 1 };
++enum { CF_PROJECT_EVENT_ACCENT = 1u, CF_PROJECT_EVENT_TIE = 2u,
++       CF_PROJECT_EVENT_LEGATO = 4u, CF_PROJECT_EVENT_CHROMATIC = 8u,
++       CF_PROJECT_EVENT_FLAGS = 15u };
++
++typedef struct {
++    char name[CF_PROJECT_SECTION_NAME];
++    uint8_t repeats;
++    uint8_t flags;                 /* v1: reserved, must be zero */
++    uint16_t drum_pattern;         /* stable pattern ID, FOLLOW or OFF */
++    cf_song_t phrase;              /* existing semantic CSG1 chord phrase */
++} cf_project_section_t;
++
++typedef struct {
++    uint32_t start_tick;           /* section-relative, 24-bit on disk */
++    uint16_t duration_ticks;
++    uint8_t note, velocity, probability;
++    uint8_t section, flags;
++} cf_project_event_t;
++
++typedef struct {
++    uint32_t tick;               /* absolute song tick; total_ticks means stopped */
++    uint32_t section_tick;       /* tick within the current section occurrence */
++    uint8_t section, repeat;     /* zero-based section and repeat occurrence */
++    uint8_t ended;
++} cf_project_cursor_t;
++
++typedef struct {
++    char name[CF_PROJECT_NAME];
++    uint8_t section_count, selected_section;
++    uint8_t melody_count, bass_count;
++    cf_project_section_t section[CF_PROJECT_MAX_SECTIONS];
++    cf_project_event_t melody[CF_PROJECT_MAX_EVENTS];
++    cf_project_event_t bass[CF_PROJECT_MAX_EVENTS];
++} cf_project_t;
++
++int cf_project_valid(const cf_project_t *project);
++uint32_t cf_project_section_ticks(const cf_project_t *project, unsigned section);
++uint32_t cf_project_total_ticks(const cf_project_t *project);
++/* Deterministic arrangement transport. No allocation, I/O, or audio calls. */
++int cf_project_playback_seek(const cf_project_t *project, cf_project_cursor_t *cursor, uint32_t tick);
++int cf_project_playback_advance(const cf_project_t *project, cf_project_cursor_t *cursor, uint32_t ticks);
++/* Returns matching onset count copied into out (may be zero); returned pointers
++ * refer to the immutable project and remain valid until it is edited. */
++unsigned cf_project_playback_events(const cf_project_t *project, const cf_project_cursor_t *cursor,
++                                   unsigned track, const cf_project_event_t **out, unsigned capacity);
++int cf_project_init(cf_project_t *project, const char *name, const cf_song_t *phrase);
++int cf_project_insert_section(cf_project_t *project, unsigned at, unsigned source, int duplicate);
++int cf_project_remove_section(cf_project_t *project, unsigned at);
++int cf_project_add_event(cf_project_t *project, unsigned track, const cf_project_event_t *event);
++int cf_project_remove_event(cf_project_t *project, unsigned track, unsigned at);
++/* CPJ1 v1 is variable-length and bounded by CF_PROJECT_WIRE_MAX (3,808 bytes). */
++int cf_project_encode(const cf_project_t *project, uint8_t *out, unsigned capacity, unsigned *written);
++int cf_project_decode(cf_project_t *project, const uint8_t *bytes, unsigned size);
++#endif
+diff -ruN a/firmware/src/coralflower.c b/firmware/src/coralflower.c
+--- a/firmware/src/coralflower.c	2026-11-10 22:32:10.000000000 +0000
++++ b/firmware/src/coralflower.c	2026-11-15 04:45:20.338851288 +0000
+@@ -149,6 +149,7 @@
+ #include "cf_chord.c"
+ #include "cf_progression.c"
+ #include "cf_song.c"
++#include "cf_project.c"
+ #include "cf_lab.c"
+ #include "cf_browser.c"
+ #include "cf_play.c"
+diff -ruN a/tests/cf_project_test.c b/tests/cf_project_test.c
+--- a/tests/cf_project_test.c	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/cf_project_test.c	2026-11-15 05:10:27.372868225 +0000
+@@ -0,0 +1,127 @@
++/* SPDX-License-Identifier: GPL-3.0-only */
++#include <stdio.h>
++#include <string.h>
++#include "cf_project.h"
++static unsigned checks,failures;
++static uint32_t hash(const uint8_t *p,unsigned n){uint32_t h=2166136261u;while(n--){h^=*p++;h*=16777619u;}return h;}
++static void fix_hash(uint8_t *p,unsigned n){uint32_t h=hash(p,n-4);for(unsigned i=0;i<4;i++)p[n-4+i]=(uint8_t)(h>>(8*i));}
++#define CHECK(x) do{checks++;if(!(x)){failures++;if(failures<30)printf("FAIL %d: %s\n",__LINE__,#x);}}while(0)
++static cf_project_event_t event(unsigned section,unsigned tick,unsigned note)
++{
++    cf_project_event_t e={0};e.section=(uint8_t)section;e.start_tick=tick;e.duration_ticks=24;
++    e.note=(uint8_t)note;e.velocity=96;e.probability=100;e.flags=CF_PROJECT_EVENT_ACCENT;return e;
++}
++static void init_project(cf_project_t *p)
++{
++    cf_song_t song;CHECK(cf_song_clone(&song,cf_progression_get(0)));
++    CHECK(cf_project_init(p,"First Song",&song));CHECK(cf_project_valid(p));
++    CHECK(p->section_count==1 && !strcmp(p->section[0].name,"Section 1"));
++    CHECK(cf_project_section_ticks(p,0)>0 && cf_project_total_ticks(p)==cf_project_section_ticks(p,0));
++    CHECK(!cf_project_init(p,"This project name is too long",&song));CHECK(cf_project_valid(p));
++}
++static void sections_and_tracks(void)
++{
++    cf_project_t p;init_project(&p);cf_project_event_t e=event(0,0,60);
++    CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&e));e=event(0,96,48);
++    CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&e));
++    CHECK(cf_project_insert_section(&p,1,0,1));CHECK(p.section_count==2 && p.melody_count==2 && p.bass_count==2);
++    CHECK(p.melody[0].section==0 && p.melody[1].section==1 && p.bass[1].section==1);
++    CHECK(cf_project_insert_section(&p,1,0,0));CHECK(p.section_count==3);
++    CHECK(p.melody[0].section==0 && p.melody[1].section==2 && p.melody[0].start_tick==0);
++    CHECK(cf_project_remove_section(&p,1));CHECK(p.section_count==2 && p.melody_count==2 && p.bass_count==2);
++    CHECK(p.melody[0].section==0 && p.melody[1].section==1);
++    CHECK(cf_project_remove_event(&p,CF_PROJECT_MELODY,0));CHECK(p.melody_count==1 && p.melody[0].section==1);
++    CHECK(!cf_project_remove_section(&p,99));CHECK(cf_project_valid(&p));
++    CHECK(cf_project_remove_section(&p,0));CHECK(p.section_count==1 && p.selected_section==0 && p.melody_count==1 && p.bass_count==1);
++}
++static void bounds_and_atomicity(void)
++{
++    cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=8;cf_project_event_t e=event(0,0,60);
++    for(unsigned i=0;i<CF_PROJECT_MAX_EVENTS;i++){e.start_tick=i*24;CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&e));}
++    cf_project_t before=p;CHECK(!cf_project_add_event(&p,CF_PROJECT_MELODY,&e));CHECK(!memcmp(&p,&before,sizeof p));
++    CHECK(!cf_project_insert_section(&p,1,0,1));CHECK(!memcmp(&p,&before,sizeof p));
++    e=event(0,0,128);CHECK(!cf_project_add_event(&p,CF_PROJECT_BASS,&e));CHECK(p.bass_count==0);
++    e=event(0,0,60);e.probability=101;CHECK(!cf_project_add_event(&p,CF_PROJECT_BASS,&e));
++    e=event(0,0,60);e.section=1;CHECK(!cf_project_add_event(&p,CF_PROJECT_BASS,&e));
++    e=event(0,0,60);e.start_tick=0x1000000u;CHECK(!cf_project_add_event(&p,CF_PROJECT_BASS,&e));
++    e=event(0,5000,60);CHECK(!cf_project_add_event(&p,CF_PROJECT_BASS,&e));
++    e=event(0,0,60);e.flags=0x80;CHECK(!cf_project_add_event(&p,CF_PROJECT_BASS,&e));
++    CHECK(cf_project_valid(&p));
++}
++static void roundtrip(void)
++{
++    cf_project_t p,q;init_project(&p);p.section[0].phrase.slot[0].bars=8;
++    CHECK(cf_project_insert_section(&p,1,0,1));CHECK(cf_project_insert_section(&p,2,1,1));
++    p.selected_section=2;p.section[0].repeats=2;p.section[1].drum_pattern=CF_PROJECT_DRUM_OFF;
++    p.section[2].phrase.slot[0].bars=8;
++    for(unsigned i=0;i<70;i++) {
++        cf_project_event_t m=event(i%3,i*24,60+i%12),b=event(i%3,i*24,36+i%12);
++        CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&m));CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&b));
++    }
++    uint8_t bytes[CF_PROJECT_WIRE_MAX],again[CF_PROJECT_WIRE_MAX];unsigned n=0,n2=0;
++    CHECK(cf_project_encode(&p,bytes,sizeof bytes,&n));CHECK(n<=CF_PROJECT_WIRE_MAX);
++    CHECK(cf_project_decode(&q,bytes,n));CHECK(cf_project_valid(&q));
++    cf_project_t saved=q;
++    CHECK(q.section_count==p.section_count && q.melody_count==p.melody_count && q.bass_count==p.bass_count);
++    CHECK(q.selected_section==2 && q.section[1].drum_pattern==CF_PROJECT_DRUM_OFF);
++    CHECK(cf_project_section_ticks(&q,2)==cf_project_section_ticks(&p,2));
++    CHECK(cf_project_total_ticks(&q)==cf_project_total_ticks(&p));
++    CHECK(!strcmp(q.name,p.name) && q.melody[69].note==p.melody[69].note && q.bass[69].section==p.bass[69].section);
++    CHECK(cf_project_encode(&q,again,sizeof again,&n2) && n==n2 && !memcmp(bytes,again,n));
++    for(unsigned i=0;i<n;i++) {
++        CHECK(!cf_project_decode(&q,bytes,i));CHECK(!memcmp(&q,&saved,sizeof q));
++    }
++    for(unsigned bit=0;bit<n*8u;bit++) {
++        memcpy(again,bytes,n);again[bit/8]^=(uint8_t)(1u<<(bit%8));
++        CHECK(!cf_project_decode(&q,again,n));CHECK(!memcmp(&q,&saved,sizeof q));
++    }
++    memcpy(again,bytes,n);
++    unsigned event_offset=CF_PROJECT_HEADER_WIRE+p.section_count*CF_PROJECT_SECTION_WIRE;
++    again[event_offset]=0xFF;again[event_offset+1]=0xFF;again[event_offset+2]=0xFF;
++    fix_hash(again,n);CHECK(!cf_project_decode(&q,again,n));CHECK(!memcmp(&q,&saved,sizeof q));
++    CHECK(!cf_project_encode(&p,bytes,n-1,&n2));
++}
++
++static void playback_timeline(void)
++{
++    cf_project_t p;init_project(&p);
++    uint32_t span=cf_project_section_ticks(&p,0);CHECK(span>96);
++    CHECK(cf_project_insert_section(&p,1,0,0));
++    p.section[0].repeats=2;p.section[1].repeats=3;
++    cf_project_event_t e=event(0,0,60);CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&e));
++    e=event(0,96,62);CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&e));
++    e=event(1,0,65);CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&e));
++    cf_project_cursor_t c;const cf_project_event_t *hits[4];
++    CHECK(cf_project_playback_seek(&p,&c,0));CHECK(c.section==0 && c.repeat==0 && c.section_tick==0 && !c.ended);
++    CHECK(cf_project_playback_events(&p,&c,CF_PROJECT_MELODY,hits,4)==1 && hits[0]->note==60);
++    CHECK(cf_project_playback_advance(&p,&c,96));CHECK(c.section==0 && c.repeat==0 && c.section_tick==96);
++    CHECK(cf_project_playback_events(&p,&c,CF_PROJECT_MELODY,hits,4)==1 && hits[0]->note==62);
++    CHECK(cf_project_playback_advance(&p,&c,span-96));CHECK(c.section==0 && c.repeat==1 && c.section_tick==0);
++    CHECK(cf_project_playback_events(&p,&c,CF_PROJECT_MELODY,hits,4)==1 && hits[0]->note==60);
++    CHECK(cf_project_playback_advance(&p,&c,span));CHECK(c.section==1 && c.repeat==0 && c.section_tick==0);
++    CHECK(cf_project_playback_events(&p,&c,CF_PROJECT_BASS,hits,4)==1 && hits[0]->note==65);
++    CHECK(cf_project_playback_advance(&p,&c,span*2u));CHECK(c.section==1 && c.repeat==2 && c.section_tick==0);
++    uint32_t total=cf_project_total_ticks(&p);CHECK(cf_project_playback_advance(&p,&c,total));
++    CHECK(c.ended && c.tick==total && !cf_project_playback_events(&p,&c,CF_PROJECT_BASS,hits,4));
++    CHECK(cf_project_playback_advance(&p,&c,1) && c.ended && c.tick==total); /* saturates at end */
++    CHECK(cf_project_playback_seek(&p,&c,total-1));CHECK(!c.ended && c.section==1 && c.repeat==2);
++    CHECK(!cf_project_playback_seek(&p,&c,total+1));
++    CHECK(cf_project_playback_seek(&p,&c,0));c.section_tick++;
++    CHECK(!cf_project_playback_events(&p,&c,CF_PROJECT_MELODY,hits,4)); /* forged cursor rejected */
++}
++
++static void maximum_wire(void)
++{
++    cf_project_t p;init_project(&p);p.section[0].phrase.slot[0].bars=8;
++    while(p.section_count<CF_PROJECT_MAX_SECTIONS)CHECK(cf_project_insert_section(&p,p.section_count,0,0));
++    cf_project_event_t e=event(0,0,60);
++    for(unsigned i=0;i<CF_PROJECT_MAX_EVENTS;i++){e.start_tick=i*24;CHECK(cf_project_add_event(&p,CF_PROJECT_MELODY,&e));}
++    for(unsigned i=0;i<CF_PROJECT_MAX_EVENTS;i++){e.start_tick=i*24;CHECK(cf_project_add_event(&p,CF_PROJECT_BASS,&e));}
++    uint8_t bytes[CF_PROJECT_WIRE_MAX];unsigned n=0;
++    CHECK(cf_project_encode(&p,bytes,sizeof bytes,&n));CHECK(n==CF_PROJECT_WIRE_MAX);CHECK(n==3808);
++}
++int main(void)
++{
++    sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();maximum_wire();
++    printf("multi-section project: %u checks, %u failures\n",checks,failures);return failures!=0;
++}
+diff -ruN a/tools/emu/emu_firmware.h b/tools/emu/emu_firmware.h
+--- a/tools/emu/emu_firmware.h	2026-11-10 22:32:10.000000000 +0000
++++ b/tools/emu/emu_firmware.h	2026-11-15 04:45:20.339422222 +0000
+@@ -118,6 +118,7 @@
+ #include "../../firmware/src/cf_chord.c"
+ #include "../../firmware/src/cf_progression.c"
+ #include "../../firmware/src/cf_song.c"
++#include "../../firmware/src/cf_project.c"
+ #include "../../firmware/src/cf_lab.c"
+ #include "../../firmware/src/cf_browser.c"
+ #include "../../firmware/src/cf_play.c"
+diff -ruN a/tools/test_project.sh b/tools/test_project.sh
+--- a/tools/test_project.sh	1970-01-01 00:00:00.000000000 +0000
++++ b/tools/test_project.sh	2026-11-15 04:45:19.633500308 +0000
+@@ -0,0 +1,9 @@
++#!/bin/sh
++# SPDX-License-Identifier: GPL-3.0-only
++set -eu
++cd "$(dirname "$0")/.."
++mkdir -p build/host
++cc -std=c11 -O2 -Wall -Wextra -Ifirmware/src -o build/host/cf_project_test \
++    tests/cf_project_test.c firmware/src/cf_project.c firmware/src/cf_song.c \
++    firmware/src/cf_progression.c firmware/src/cf_harmony.c firmware/src/cf_theory.c firmware/src/cf_chord.c
++build/host/cf_project_test
