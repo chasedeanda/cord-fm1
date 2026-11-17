@@ -88,6 +88,8 @@ typedef struct {
     uint8_t root_down[CF_MAX_ROOTS];/* .. still physically down (HOLD keeps the others) */
     uint8_t prev_n;
     uint8_t prev[CF_MAX_NOTES]; /* the last chord that sounded (Auto inversion) */
+    uint8_t tones;              /* live Tones: 0 = All, else 2..4 tones a chord (transient, never saved) */
+    uint8_t pair;               /* live Pair: CF_PAIR_*, a second voice above every note, in the scale */
     cf_chord_out_t out;
 } cf_chord_t;
 
@@ -96,6 +98,12 @@ void cf_chord_init(cf_chord_t *c, const cf_chord_cfg_t *cfg);
 /* a configuration change: held keys are kept, the chord re-resolved; a change of algorithm drops the buttons */
 void cf_chord_config(cf_chord_t *c, const cf_chord_cfg_t *cfg);
 void cf_chord_harmony(cf_chord_t *c, const cf_harmony_t *h);
+/* Chord Live: limit a chord to 2..4 tones (0 = all) and pair every sounding note with a second one a scale
+ * interval above it (CF_PAIR_*). Transient: not part of the saved configuration. */
+enum { CF_PAIR_OFF = 0, CF_PAIR_OCTAVE, CF_PAIR_3RD, CF_PAIR_4TH, CF_PAIR_5TH, CF_PAIR_6TH, CF_PAIR_10TH, CF_PAIR_N };
+void cf_chord_voicing(cf_chord_t *c, int tones, int pair);
+/* the scale steps each pair interval spans (octave counts as a full scale octave): exposed for the tests */
+int cf_pair_steps(int scale, int pair);
 /* a key went down (1) or up (0); returns 1 when the output changed. key CF_KEY_EXT + n: a root at MIDI note n */
 int cf_chord_key(cf_chord_t *c, int key, int down);
 /* every key up, every latch cleared */

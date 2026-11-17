@@ -451,6 +451,41 @@ int main(void)
     NOTES("Quantize Off: the outside F# as it is, F#m7", 66, 69, 73, 76);
     up(CF_KEY_EXT + 66);
 
+    /* Chord Live: Tones limits a chord, Pair adds a scale interval above every note */
+    setup(CF_ALG_TOP, CF_Q_FULL, 0, CF_SC_MAJOR);
+    down(CF_KEY_EXT + 60);                       /* C */
+    down(3);                                     /* a seventh button */
+    {
+        uint8_t before = C.out.n;
+        cf_chord_voicing(&C, 3, 0);
+        CHECK(C.out.n <= 3 && C.out.n >= 2, "Tones 3 limits the chord (was %d, now %d)", before, C.out.n);
+        cf_chord_voicing(&C, 0, 0);
+        CHECK(C.out.n == before, "Tones All restores it");
+    }
+    cf_chord_voicing(&C, 3, CF_PAIR_OCTAVE);
+    {
+        int ok = 1, i, base_n = C.out.n / 2;
+        CHECK(C.out.n == 2 * base_n || C.out.n > 3, "octave pair doubles the notes: %d", C.out.n);
+        for (i = 0; i < C.out.n; i++) if (C.out.note[i] > 127) ok = 0;
+        CHECK(ok, "pair notes stay in MIDI range");
+    }
+    cf_chord_voicing(&C, 0, CF_PAIR_OFF);
+    up(3);
+    up(CF_KEY_EXT + 60);
+    CHECK(cf_pair_steps(CF_SC_MAJOR, CF_PAIR_3RD) == 2 && cf_pair_steps(CF_SC_MAJOR, CF_PAIR_10TH) == 9 &&
+          cf_pair_steps(CF_SC_MAJOR, CF_PAIR_OCTAVE) == 7 && cf_pair_steps(CF_SC_MAJ_PENT, CF_PAIR_OCTAVE) == 5 &&
+          cf_pair_steps(CF_SC_MAJOR, CF_PAIR_OFF) == 0, "pair step table");
+    /* a single note paired a 3rd up in C major: C -> E, D -> F */
+    cf_chord_voicing(&C, 0, CF_PAIR_3RD);
+    down(CF_KEY_EXT + 60);
+    {
+        int hasC = 0, hasE = 0, i;
+        for (i = 0; i < C.out.n; i++) { if (C.out.note[i] == 60) hasC = 1; if (C.out.note[i] == 64) hasE = 1; }
+        CHECK(hasC && hasE, "a paired 3rd above C is E");
+    }
+    up(CF_KEY_EXT + 60);
+    cf_chord_voicing(&C, 0, 0);
+
     printf("cf_chord: %d checks, %d failures\n", checks, fails);
     return fails != 0;
 }

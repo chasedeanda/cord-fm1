@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "cf_project.h"
+#include "cf_melody.h"
 static unsigned checks,failures;
 static uint32_t hash(const uint8_t *p,unsigned n){uint32_t h=2166136261u;while(n--){h^=*p++;h*=16777619u;}return h;}
 static void fix_hash(uint8_t *p,unsigned n){uint32_t h=hash(p,n-4);for(unsigned i=0;i<4;i++)p[n-4+i]=(uint8_t)(h>>(8*i));}
@@ -186,8 +187,43 @@ static void maximum_wire(void)
     uint8_t bytes[CF_PROJECT_WIRE_MAX];unsigned n=0;
     CHECK(cf_project_encode(&p,bytes,sizeof bytes,&n));CHECK(n==CF_PROJECT_WIRE_MAX);CHECK(n==3808);
 }
+static void melody_step_input(void)
+{
+    cf_project_t p;init_project(&p);
+    CHECK(cf_project_toggle_note(&p,CF_PROJECT_MELODY,0,0,64,24,100)==1 && p.melody_count==1);
+    CHECK(cf_project_find_event(&p,CF_PROJECT_MELODY,0,0,64)==0 && cf_project_find_event(&p,CF_PROJECT_MELODY,0,0,65)<0);
+    CHECK(cf_project_toggle_note(&p,CF_PROJECT_MELODY,0,24,64,24,100)==1 && p.melody_count==2);   /* same note, another step */
+    CHECK(cf_project_toggle_note(&p,CF_PROJECT_MELODY,0,0,64,24,100)==2 && p.melody_count==1);    /* toggled off */
+    CHECK(cf_project_valid(&p));
+    CHECK(cf_project_toggle_note(&p,CF_PROJECT_MELODY,0,cf_project_section_ticks(&p,0),60,24,100)==0);  /* past the section */
+    CHECK(cf_project_toggle_note(&p,CF_PROJECT_MELODY,5,0,60,24,100)==0 && cf_project_toggle_note(&p,CF_PROJECT_MELODY,0,0,128,24,100)==0);
+    CHECK(cf_project_toggle_note(&p,CF_PROJECT_BASS,0,0,40,48,90)==1 && p.bass_count==1);
+}
+static void melody_editor(void)
+{
+    cf_project_t p;init_project(&p);
+    cf_melody_t m;cf_melody_init(&m,CF_PROJECT_MELODY,0,0,CF_SC_MAJOR);
+    unsigned steps=cf_melody_steps(&p,&m);
+    CHECK(steps>=16 && m.note==72 && m.step==0);
+    cf_melody_pitch(&m,1);CHECK(m.note==74);cf_melody_pitch(&m,-3);CHECK(m.note==69);   /* C major: C D E F G A */
+    cf_melody_pitch(&m,7);CHECK(m.note==81);                                              /* a full octave of degrees */
+    m.note=72;
+    cf_melody_move(&p,&m,-1);CHECK(m.step==steps-1);cf_melody_move(&p,&m,1);CHECK(m.step==0);   /* wraps */
+    cf_melody_length(&m,-9);CHECK(m.len_i==0);cf_melody_length(&m,9);CHECK(m.len_i==4);cf_melody_length(&m,-2);CHECK(m.len_i==2);
+    CHECK(cf_melody_toggle(&p,&m)==1 && p.melody_count==1);
+    CHECK(cf_melody_cell(&p,&m,0,72)==1 && cf_melody_cell(&p,&m,3,72)==2 && cf_melody_cell(&p,&m,4,72)==0 && cf_melody_cell(&p,&m,0,74)==0);
+    cf_melody_move(&p,&m,steps-2);CHECK(cf_melody_fit(&p,&m)==2);                         /* cut to the section's end */
+    CHECK(cf_melody_toggle(&p,&m)==1 && p.melody[1].duration_ticks==2*CF_MEL_STEP_TICKS && cf_project_valid(&p));
+    m.step=0;CHECK(cf_melody_toggle(&p,&m)==2 && p.melody_count==1);                      /* SEL again removes it */
+    cf_melody_init(&m,CF_PROJECT_BASS,0,9,CF_SC_MINOR);CHECK(m.note==cf_snap(CF_SC_MINOR,9,40,1));
+    CHECK(cf_melody_toggle(&p,&m)==1 && p.bass_count==1 && cf_melody_cell(&p,&m,0,m.note)==1);
+    for(int i=0;i<200;i++)cf_melody_pitch(&m,-1);CHECK(m.note<=127);
+    for(int i=0;i<200;i++)cf_melody_pitch(&m,1);CHECK(m.note<=127);
+}
 int main(void)
 {
+    melody_step_input();
+    melody_editor();
     sections_and_tracks();bounds_and_atomicity();roundtrip();playback_timeline();player_scheduler();visitor_scheduler();maximum_wire();
     printf("multi-section project: %u checks, %u failures\n",checks,failures);return failures!=0;
 }

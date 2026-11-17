@@ -4,6 +4,7 @@
 enum { CFD_HARMONY,CFD_TIMING,CFD_VOICING,CFD_BASS,CFD_PHRASE,CFD_NTAB };
 static const char *const CFD_TAB[]={"Edit Chord","Timing","Voicing","Bass","Phrase"};
 static const char *const CFD_QUALITY[]={"Follow","Major","Minor","Dim","Aug","Power"};
+static const char *const CFD_TYPE[]={"Play","Chord only","Bass only","Silence","Break"};
 static const char *const CFD_ACTION[]={"Insert","Duplicate","Remove","Undo"};
 static struct { uint8_t focus,action,confirm,conflict,choice;unsigned requested; } cfdu;
 static int cfd_prepare(cpa_plan_t *plan,cf_chord_cfg_t cfg,unsigned rhythm,unsigned mode,unsigned repeat_off,unsigned click_start)
@@ -15,7 +16,7 @@ static int cfd_prepare(cpa_plan_t *plan,cf_chord_cfg_t cfg,unsigned rhythm,unsig
     for(unsigned i=0;i<plan->n;i++) {
         cf_song_chord_t o;cpa_slot_t *s=&plan->slot[i];const cpa_slot_t *prev=i?&plan->slot[i-1]:0;
         if(!cf_song_resolve(&cfwd.song,i,&cfg,prev?prev->note:0,prev?prev->n:0,&o))return 0;
-        s->root=o.root;s->mask=o.mask;s->n=o.n;s->ticks=o.ticks;s->gate=o.gate;s->tie=o.tie;s->bass_pc=o.bass_pc;
+        s->root=o.root;s->mask=o.mask;s->n=o.n;s->ticks=o.ticks;s->gate=o.gate;s->tie=(uint8_t)(o.tie|(o.chord_off<<1)|(o.drums_off<<2));s->bass_pc=o.bass_pc;
         memcpy(s->note,o.note,o.n);plan->degree[i]=cfwd.song.slot[i].degree;
         cf_chord_out_t bass={0};bass.sounding=1;bass.root_note=o.root;bass.root_pc=o.root%12;bass.mask=o.mask;bass.bass_pc=o.bass_pc;
         s->nb=o.bass_off?0:cfp_bass_notes_of(&bass,s->bass);
@@ -93,7 +94,7 @@ static void cfd_knob_info(int k,cf_knob_t *o)
     } else if(tab==CFD_BASS) {
         if(k==0){kfmt(o->name,12,"BASS TONE");if(v->bass<0)kfmt(o->val,14,"Root");else{cf_spell_t sp;cf_key_spell(cfwd.song.tonic,cfwd.song.scale,&sp);cf_pc_name((cfwd.song.tonic+cf_scale_step(cfwd.song.scale,v->degree)+v->alter+v->bass+12)%12,&sp,o->val);}}
         if(k==1){kfmt(o->name,12,"REGISTER");kint(o->val,v->bass_oct," oct");}
-        if(k==2){kfmt(o->name,12,"SLOT BASS");kfmt(o->val,14,v->bass_off?"Off":"Follow");}
+        if(k==2){kfmt(o->name,12,"SLOT TYPE");kfmt(o->val,14,CFD_TYPE[CF_SLOT_TYPE_OK(v->bass_off)?(v->bass_off==CF_SLOT_BREAK?4:v->bass_off):0]);}
     } else {
         if(k==0){kfmt(o->name,12,"ACTION");kfmt(o->val,14,CFD_ACTION[cfdu.action]);}
         if(k==1){kfmt(o->name,12,"POSITION");kint(o->val,cfdu.focus+1,0);}
@@ -110,7 +111,7 @@ static void cfd_turn(int k,int d)
     if(tab==CFD_HARMONY){if(k==0)v->degree=wrapi(v->degree+d,7);if(k==1){v->quality=wrapi(v->quality+d,CF_SONG_NQUALITY);v->mask=0;}if(k==2)v->color=wrapi(v->color+d,CF_MOD_MAJ);if(k==3&&!v->unit)v->bars=clampi(v->bars+d,1,8);}
     if(tab==CFD_TIMING){if(k==0){unsigned unit=d>0;if(unit!=v->unit){unsigned per=next.beats*(next.beats==6?2:4);if(unit)v->quarters=clampi(v->bars*per,1,128);else v->bars=clampi((v->quarters+per-1)/per,1,8);v->unit=unit;}}if(k==1){if(v->unit)v->quarters=clampi(v->quarters+d,1,128);else v->bars=clampi(v->bars+d,1,8);}if(k==2)v->gate=clampi(v->gate+d,20,100);if(k==3)v->tie=d>0;}
     if(tab==CFD_VOICING){if(k==0)v->inversion=clampi(v->inversion+d,-1,3);if(k==1)v->reg=clampi(v->reg+d,-2,2);}
-    if(tab==CFD_BASS){if(k==0){int8_t tones[12];int n=cf_mask_tones(cf_song_mask(&next,cfdu.focus,next.scale),tones),at=0;for(int i=0;i<n;i++)if(v->bass==tones[i]%12)at=i;at=wrapi(at+d,n);v->bass=at?tones[at]%12:-1;}if(k==1)v->bass_oct=clampi(v->bass_oct+d,-2,1);if(k==2)v->bass_off=d<0;}
+    if(tab==CFD_BASS){if(k==0){int8_t tones[12];int n=cf_mask_tones(cf_song_mask(&next,cfdu.focus,next.scale),tones),at=0;for(int i=0;i<n;i++)if(v->bass==tones[i]%12)at=i;at=wrapi(at+d,n);v->bass=at?tones[at]%12:-1;}if(k==1)v->bass_oct=clampi(v->bass_oct+d,-2,1);{int at=0;for(int i=0;i<CF_SLOT_NTYPES;i++)if(CF_SLOT_TYPE_VAL[i]==v->bass_off)at=i;if(k==2)v->bass_off=CF_SLOT_TYPE_VAL[wrapi(at+d,CF_SLOT_NTYPES)];}}
     if(tab==CFD_PHRASE){if(k==0){cfdu.action=wrapi(cfdu.action+d,4);return;}if(k==1){cfdu.focus=wrapi(cfdu.focus+d,next.n);return;}if(k==2)next.beats=clampi(next.beats+d,2,7);}
     (void)cfd_commit(&next);
 }

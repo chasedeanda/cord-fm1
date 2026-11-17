@@ -491,7 +491,7 @@ static void view_bass(int x0)
             py += 7;                           /* (the keys a little lower, under the two lines) */
         }
     } else {
-        if (cs.octaver)
+        if (cs.octaver == CF_BASS_X_OCTAVER)
             draw_wave(xa, ym, w, amp / 2 + 1, cyc * 2, ph * 2u, 0, live ? FL_INK2 : FL_INK3, 1);
         draw_wave(xa, ym, w, amp ? amp : 1, cyc, ph, 0, live ? C_ACC(0) : C_ACC(2), 0);
     }

@@ -118,7 +118,7 @@ static int cf_home_bank_turn(int k,int d)
     if(cf_home_bank==CF_HB_LOOP || cf_home_bank==CF_HB_MIX) {
         cf_acc_knob_turn_for(cf_home_bank==CF_HB_LOOP?CF_ACC_LOOP:CF_ACC_MIX,k,d);return 1;
     }
-    if (cf_home_bank==CF_HB_LEARN) { cf_harmony_turn(k,d); return 1; }
+    if (cf_home_bank==CF_HB_LEARN) { if(k<2)cf_harmony_turn(k,d); return 1; }
     if (!d) return 1;
     if(cf_home_bank==CF_HB_PERFORM) {
         if(k<3)cf_perform_turn((unsigned)k+1u);else cpa_tempo(d);

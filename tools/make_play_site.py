@@ -6,7 +6,7 @@ import hashlib, json, re, shutil, subprocess
 root=Path(__file__).resolve().parents[1]
 out=root/'build/play-site'; out.mkdir(parents=True,exist_ok=True)
 play=out/'play';play.mkdir(exist_ok=True)
-for name in ('index.html','emu.js','keymap.js','worklet.js','coralflower.wasm'):
+for name in ('index.html','emu.js','keymap.js','melody.js','worklet.js','coralflower.wasm'):
     shutil.copyfile(root/'build/emu-web'/name,play/name)
 shutil.copyfile(root/'web/site.css',out/'site.css')
 shutil.copytree(root/'web/fonts',out/'fonts',dirs_exist_ok=True)

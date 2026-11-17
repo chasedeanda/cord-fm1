@@ -49,6 +49,14 @@ static void timing_and_voicing(void)
     cf_song_t s;CHECK(cf_song_clone(&s,cf_progression_get(0)));cf_chord_cfg_t cfg;cf_chord_defaults(&cfg);cfg.scale=s.scale;cfg.tonic=s.tonic;
     cf_song_chord_t a,b;cf_song_slot_t *v=&s.slot[0];v->bars=8;v->gate=37;v->tie=1;v->bass_off=1;v->bass_oct=-2;
     CHECK(cf_song_resolve(&s,0,&cfg,0,0,&a) && a.ticks==8*4*96 && a.gate==37 && a.tie && a.bass_off && a.bass_oct==-2);
+    /* slot types: bit0 bass off, bit1 chord off; 4+ invalid; wire round-trips */
+    for(unsigned i=0;i<CF_SLOT_NTYPES;i++){
+        unsigned t=CF_SLOT_TYPE_VAL[i];
+        cf_song_t q=s;q.slot[0].bass_off=(uint8_t)t;cf_song_chord_t r;uint8_t w[CF_SONG_WIRE];cf_song_t back;
+        CHECK(cf_song_valid(&q) && cf_song_resolve(&q,0,&cfg,0,0,&r) && r.bass_off==(t&1u) && r.chord_off==((t>>1)&1u) && r.drums_off==((t>>2)&1u));
+        CHECK(cf_song_encode(&q,w) && cf_song_decode(&back,w,sizeof w) && back.slot[0].bass_off==t);
+    }
+    {for(unsigned t=4;t<8;t++){if(t==CF_SLOT_BREAK)continue;cf_song_t q=s;q.slot[0].bass_off=(uint8_t)t;CHECK(!cf_song_valid(&q));}}
     s.beats=6;CHECK(cf_song_resolve(&s,0,&cfg,0,0,&a) && a.ticks==8*6*96);
     v->unit=CF_SONG_QUARTERS;
     for(unsigned q=1;q<=128;q++){v->quarters=q;s.beats=4;CHECK(cf_song_resolve(&s,0,&cfg,0,0,&a) && a.ticks==q*24);s.beats=6;CHECK(cf_song_resolve(&s,0,&cfg,0,0,&a) && a.ticks==q*48);}

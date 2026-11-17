@@ -39,6 +39,12 @@ static const cf_theme_t CF_THEMES[] = {
 };
 #define CF_NTHEMES ((int)(sizeof CF_THEMES / sizeof CF_THEMES[0]))
 
+/* the Bass page's EXTRA (cf_set_t.octaver, kept as one byte so saved settings keep their size): 0 Off, 1 Octaver
+ * (a second note an octave up), 2..4 Bass pedal point on the key's I / V / IV */
+enum { CF_BASS_X_OFF, CF_BASS_X_OCTAVER, CF_BASS_X_PEDAL_I, CF_BASS_X_PEDAL_V, CF_BASS_X_PEDAL_IV, CF_BASS_X_N };
+static const char *const CF_BASS_X_NAME[CF_BASS_X_N] = {"Off", "Octaver", "Pedal I", "Pedal V", "Pedal IV"};
+static const uint8_t CF_PEDAL_STEP[3] = {0, 7, 5};      /* semitones above the tonic */
+
 /* ------------------------------------------------------------ settings --- */
 /* everything the user sets and the unit keeps (cf_settings.c stores it) */
 typedef struct {
@@ -123,6 +129,7 @@ static uint32_t cf_art_ms(void);
 static cf_harmony_t ch;                         /* separate versioned record; cf_set_t stays 188 bytes */
 static struct {
     uint8_t idea, rhythm, mode, explored, repeat_off;
+    uint8_t live_tones, live_pair;   /* Chord Live: Tones (0 All, 2..4) and Pair (CF_PAIR_*); session-only */
     uint8_t saved_tonic, saved_scale, saved_quantize, saved_beats;
     uint32_t revision, modifiers, click_generation;
 } cpg;             /* Browser selection only; never persisted */
@@ -290,7 +297,9 @@ static int cf_tween_offset(uint32_t start, unsigned ms, unsigned distance)
     return (int)(distance*left*left*left/(ms*ms*ms));
 }
 static const uint32_t CF_SKIN_RGB[CF_SKIN_N][7] = {
-    {0x150F0C,0x241813,0x5D4537,0xFFF4E5,0xD0BFB1,0xFFA55B,0x28170D},
+    /* Warm Burnout Dark (skin 0): bg #1a1510; panel/line ladder #262018 .. #42362a (chrome only, never text); ink #bfbdb6
+     * and muted #b4a89c (both >= 7:1 on the bg); accent = Functions #ffb454; text on accent #141210 */
+    {0x1A1510,0x262018,0x42362A,0xBFBDB6,0xB4A89C,0xFFB454,0x141210},
     {0x190F19,0x291929,0x5D3E58,0xFFF2FB,0xD0B8CD,0xF29BCD,0x30152A}
 };
 static void cf_palette_build(void)

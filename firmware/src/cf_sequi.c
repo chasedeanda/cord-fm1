@@ -1232,14 +1232,18 @@ static int sq_bass_of(const cf_chord_out_t *o, uint8_t out[2])   /* (cf_play.c c
     int n = 0, b;
     if (!cs.bass_on || !o->sounding || o->single || o->bass_pc < 0)
         return 0;
-    b = (int)o->root_note - 12 + 12 * cs.bass_oct;
-    b += ((o->bass_pc - (b % 12 + 12) % 12 + 18) % 12) - 6;
+    if (cs.octaver >= CF_BASS_X_PEDAL_I)
+        b = 36 + (cs.chord.tonic + CF_PEDAL_STEP[cs.octaver - CF_BASS_X_PEDAL_I]) % 12 + 12 * cs.bass_oct;
+    else {
+        b = (int)o->root_note - 12 + 12 * cs.bass_oct;
+        b += ((o->bass_pc - (b % 12 + 12) % 12 + 18) % 12) - 6;
+    }
     while (b < 12)
         b += 12;
     while (b > 96)
         b -= 12;
     out[n++] = (uint8_t)b;
-    if (cs.octaver && b + 12 <= 120)
+    if (cs.octaver == CF_BASS_X_OCTAVER && b + 12 <= 120)
         out[n++] = (uint8_t)(b + 12);
     return n;
 }

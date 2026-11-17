@@ -268,6 +268,36 @@ static const cf_source_chord_t *cfc_source(const cf_chord_t *c, int root)
     }
     return 0;
 }
+int cf_pair_steps(int scale, int pair)
+{
+    static const uint8_t steps[CF_PAIR_N] = {0, 0, 2, 3, 4, 5, 9};   /* 3rd = 2 scale steps ... 10th = 9 */
+    if (pair <= CF_PAIR_OFF || pair >= CF_PAIR_N) return 0;
+    return pair == CF_PAIR_OCTAVE ? cf_scale_size(scale) : steps[pair];
+}
+/* a note's pair: the same scale degree (a note off the scale snaps to it) moved up `steps` scale steps */
+static int cfc_pair_note(const cf_chord_cfg_t *g, int note, int steps)
+{
+    int snapped = cf_snap(g->scale, g->tonic, note, 1), rel = snapped - g->tonic, oct, pc, idx;
+    oct = rel >= 0 ? rel / 12 : -((-rel + 11) / 12);
+    pc = rel - 12 * oct;
+    idx = cf_scale_index(g->scale, pc);
+    if (idx < 0) return -1;
+    return g->tonic + 12 * oct + cf_scale_step(g->scale, idx + steps);
+}
+static void cfc_apply_pair(const cf_chord_cfg_t *g, int pair, uint8_t *note, uint8_t *n)
+{
+    int steps = cf_pair_steps(g->scale, pair), k = *n, i, j;
+    if (!steps) return;
+    for (i = 0; i < *n && k < CF_MAX_NOTES; i++) {
+        int p = cfc_pair_note(g, note[i], steps);
+        if (p < 0 || p > 127) continue;
+        for (j = 0; j < k && note[j] != p; j++)
+            ;
+        if (j == k) note[k++] = (uint8_t)p;
+    }
+    cfc_sort_u8(note, k);
+    *n = (uint8_t)k;
+}
 static int cfc_resolve(cf_chord_t *c)
 {
     cf_chord_out_t o = c->out, *old = &c->out;
@@ -376,6 +406,8 @@ static int cfc_resolve(cf_chord_t *c)
             for (int ti = 0; ti < nt; ti++)
                 if (tones[ti] % 12 == source->bass) { f.inv = ti; break; }
         }
+        if (c->tones >= 2 && c->tones <= 4)               /* Chord Live Tones: the character tones first */
+            mask = cf_harmony_limit(mask, c->tones);
         base = o.root_note;
         inv = f.inv < 0 ? 0 : f.inv;
         if (f.inv == CF_INV_AUTO) {
@@ -411,6 +443,8 @@ static int cfc_resolve(cf_chord_t *c)
             ? (o.root_pc + source->bass) % 12 : (int8_t)cf_bass_pc(o.root_pc, mask, f.bass);
         o.form = f;
     }
+    if (o.sounding && o.n && c->pair)
+        cfc_apply_pair(g, c->pair, o.note, &o.n);
     changed = o.sounding != old->sounding || o.single != old->single || o.n != old->n ||
               o.bass_pc != old->bass_pc || o.buttons != old->buttons || o.hold != old->hold ||
               o.automatic != old->automatic || o.fallback != old->fallback || o.conflict != old->conflict ||
@@ -440,6 +474,14 @@ void cf_chord_config(cf_chord_t *c, const cf_chord_cfg_t *cfg)
     cfc_resolve(c);
 }
 
+void cf_chord_voicing(cf_chord_t *c, int tones, int pair)
+{
+    uint8_t t = (uint8_t)(tones >= 2 && tones <= 4 ? tones : 0), p = (uint8_t)(pair > 0 && pair < CF_PAIR_N ? pair : 0);
+    if (t == c->tones && p == c->pair) return;
+    c->tones = t;
+    c->pair = p;
+    cfc_resolve(c);
+}
 void cf_chord_harmony(cf_chord_t *c, const cf_harmony_t *h)
 {
     int old_mode = c->harmony.mode;

@@ -10,7 +10,7 @@ enum { CPA_NOTES = 1, CPA_GROOVE = 2, CPA_PHRASE = 4 };
 typedef struct {
     uint32_t mask;
     uint16_t ticks;
-    uint8_t root, n, note[6], bass[2], nb, gate, tie;
+    uint8_t root, n, note[6], bass[2], nb, gate, tie;   /* tie: bit0 tied to the next, bit1 chord silent, bit2 drums dropped (a Break); kept in one byte: the plan is size-budgeted */
     int8_t bass_pc;
 } cpa_slot_t;
 typedef struct {
@@ -69,7 +69,7 @@ static int cpa_valid(const cpa_plan_t *p)
     for (unsigned i = 0; i < p->n; i++) {
         const cpa_slot_t *s = &p->slot[i];
         if (p->degree[i] > 6 || !s->ticks || s->ticks>64u*SQ_PPQN ||
-            !s->n || s->n > 6 || !s->mask || s->root > 127 || s->nb>2 || s->gate<20 || s->gate>100 || s->tie>1 || s->bass_pc<0 || s->bass_pc>11) return 0;
+            !s->n || s->n > 6 || !s->mask || s->root > 127 || s->nb>2 || s->gate<20 || s->gate>100 || s->tie>7 || s->bass_pc<0 || s->bass_pc>11) return 0;
         for (unsigned j = 0; j < s->n; j++)
             if (s->note[j] > 127 || (j && s->note[j] <= s->note[j-1])) return 0;
         for (unsigned j = 0; j < s->nb; j++) if (s->bass[j] > 127) return 0;
@@ -96,10 +96,12 @@ static void cpa_arp_off(void)
 {
     cfa_t *saved=cfa_at;cfa_at=&cfa_sq[0];cfa_stop();cfa.on=0;cfa_at=saved;
 }
+static uint8_t cpa_break_drop;   /* a Break slot dropped the drums; a later slot that is not a Break brings them back */
 static int cpa_live_chord(void)
 { return cfp_cp==0 && (cfp.n || cfa_k.n); }
 static void cpa_release(void)
 {
+    cpa_break_drop = 0;
     cf_project_live_stop();
     cf_perf_reset();
     cpa_arp_off();
@@ -131,9 +133,19 @@ static void cpa_emit(void)
        !memcmp(cfa_sq[0].note,s->note,s->n)) {cpa_tie_from=0;return;}
     cpa_tie_from=0;
     cpa_arp_off();
+    if (s->tie & 4u) { if (!cpa_break_drop) { cf_perf_queue(CFPERF_DROP); cpa_break_drop = 1; } }
+    else if (cpa_break_drop) { cf_perf_queue(CFPERF_BACK); cpa_break_drop = 0; }
     uint32_t gt = cfp.nb || cfa.on ? 0 : sqp_glide_ticks();
     if (cpa.plan.mode == CPA_DRUMS) {
         sqp_chord_off(); sqp_bass_off(); sqp.dn = 0; return;
+    }
+    if (s->tie & 2u) {   /* slot type Bass only / Silence: no chord (or arp); bass follows its own flag via nb */
+        sqp_chord_off();
+        sqp.dn = sqp.gn = s->n;
+        for (unsigned i = 0; i < s->n; i++) sqp.dnote[i] = sqp.gnote[i] = s->note[i];
+        sqp.droot = s->root; sqp.dmask = s->mask; sqp.dsingle = 0; sqp.dser++;
+        sqp_bass_on(s->bass, cfp_cfg.bass_on ? s->nb : 0, s->ticks, 0);
+        return;
     }
     sq_ev_t e = {0}; e.n = s->n;
     for (unsigned i = 0; i < s->n; i++) e.note[i] = s->note[i];
@@ -227,7 +239,7 @@ static void cpa_tick1(void)
     int bar=cpa.t>=cpa.plan.beats*SQ_PPQN;
     int onset=cpa.elapsed>=cpa.plan.slot[cpa.slot].ticks;
     if (bar || onset) {
-        cpa_tie_from=onset?cpa.plan.slot[cpa.slot].tie:0;
+        cpa_tie_from=onset?(cpa.plan.slot[cpa.slot].tie&1u):0;
         int reset = 0;
         if(bar)cpa.t = 0;
         if (bar && cpa_setup.flags) {
@@ -274,7 +286,7 @@ static void cpa_tick1(void)
         if (onset) cpa_emit();
     }
     const cpa_slot_t *gate=&cpa.plan.slot[cpa.slot];
-    if(gate->gate<100 && !gate->tie && cpa.elapsed>=(uint32_t)gate->ticks*gate->gate/100u) {
+    if(gate->gate<100 && !(gate->tie&1u) && cpa.elapsed>=(uint32_t)gate->ticks*gate->gate/100u) {
         cpa_arp_off();sqp_chord_off();sqp_bass_off();sqp.dn=0;
     }
     if (dmp.on) { dmp.t = cpa.t; dmp_now(); }
@@ -343,6 +355,6 @@ static void cpa_realtime(unsigned status)
         if(fresh){cpa_grid_start();cpa_groove(1);if(dmp.on)dmp_now();}
         cfm.running = 1; cf_grid.on = 1;
         const cpa_slot_t *s=&cpa.plan.slot[cpa.slot];
-        if(s->tie || cpa.elapsed<(uint32_t)s->ticks*s->gate/100u)cpa_emit();
+        if((s->tie&1u) || cpa.elapsed<(uint32_t)s->ticks*s->gate/100u)cpa_emit();
     }
 }

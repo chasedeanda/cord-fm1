@@ -350,6 +350,26 @@ int cf_project_remove_event(cf_project_t *p,unsigned track,unsigned at)
     if(track==CF_PROJECT_MELODY)p->melody_count--;else p->bass_count--;return 1;
 }
 
+int cf_project_find_event(const cf_project_t *p,unsigned track,unsigned section,uint32_t start_tick,unsigned note)
+{
+    if(!p || (track!=CF_PROJECT_MELODY && track!=CF_PROJECT_BASS))return -1;
+    unsigned n=cp_track_count(p,track);const cf_project_event_t *events=cp_track_events_const(p,track);
+    for(unsigned i=0;i<n;i++)
+        if(events[i].section==section && events[i].start_tick==start_tick && events[i].note==note)return (int)i;
+    return -1;
+}
+int cf_project_toggle_note(cf_project_t *p,unsigned track,unsigned section,uint32_t start_tick,
+                           unsigned note,unsigned duration_ticks,unsigned velocity)
+{
+    if(!p || section>=p->section_count || note>127 || velocity>127 || !duration_ticks || duration_ticks>0xFFFFu)return 0;
+    int at=cf_project_find_event(p,track,section,start_tick,note);
+    if(at>=0)return cf_project_remove_event(p,track,(unsigned)at)?2:0;
+    cf_project_event_t e;memset(&e,0,sizeof e);
+    e.start_tick=start_tick;e.duration_ticks=(uint16_t)duration_ticks;e.note=(uint8_t)note;
+    e.velocity=(uint8_t)velocity;e.probability=100;e.section=(uint8_t)section;
+    return cf_project_add_event(p,track,&e)?1:0;
+}
+
 static void cp_event_encode(uint8_t *p,const cf_project_event_t *e)
 {
     cp_u24(p,e->start_tick);cp_u16(p+3,e->duration_ticks);p[5]=e->note;p[6]=e->velocity;

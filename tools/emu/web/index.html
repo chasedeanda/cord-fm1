@@ -9,7 +9,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Play CoralFlower in your browser</title>
 <meta name="description" content="Play CoralFlower, chord firmware for the M-VAVE FM-1, in your browser. It’s the real firmware, compiled to WebAssembly, with sound.">
-<meta name="theme-color" content="#110A02">
+<meta name="theme-color" content="#1A1510">
 <meta property="og:title" content="Play CoralFlower in your browser">
 <meta property="og:description" content="The real CoralFlower firmware for the M-VAVE FM-1, running in your browser with sound.">
 <meta property="og:image" content="../images/home.png">
@@ -19,6 +19,16 @@
 <link rel="preload" href="../fonts/DepartureMono.woff" as="font" type="font/woff" crossorigin>
 <link rel="stylesheet" href="../site.css">
 <script>document.documentElement.classList.add("js");</script>
+<style>
+.melody { width: 100%; max-width: 68rem; margin-top: var(--space-l, 2rem); display: grid; gap: var(--space-s, .75rem); }
+.melody__title { font-size: 1.25rem; margin: 0; }
+.melody__bar { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
+.melody__bar label { display: inline-flex; gap: .5rem; align-items: center; color: var(--color-text-muted); }
+.melody__bar select, .melody__bar input { background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-border-strong); border-radius: .375rem; padding: .35rem .5rem; font: inherit; }
+.melody__bar input { width: 5rem; }
+.melody__grid { width: 100%; display: block; border: 1px solid var(--color-border-strong); border-radius: .5rem; background: var(--color-bg); touch-action: manipulation; }
+.melody__grid:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+</style>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -101,6 +111,22 @@
           <dt class="legend__rule"><kbd class="m">drag</kbd><kbd class="m">wheel</kbd></dt><dd class="legend__rule">turn</dd>
         </dl></section>
       </div>
+      <section class="melody" id="melody" aria-labelledby="melody-title">
+        <h2 class="melody__title" id="melody-title">Melody</h2>
+        <p class="caption">A step editor for a melody line. It plays through its own sound, not the firmware&rsquo;s, and saves in this browser.</p>
+        <div class="melody__bar">
+          <label>Key <select id="melKey"></select></label>
+          <label>Scale <select id="melScale"></select></label>
+          <label>Length <select id="melBars"></select></label>
+          <label>Tempo <input id="melBpm" type="number" min="40" max="240" step="1" inputmode="numeric"></label>
+          <button id="melPlay" class="btn btn--primary btn--sm" type="button">Play</button>
+          <button id="melClear" class="btn btn--sm" type="button">Clear</button>
+          <button id="melExport" class="btn btn--sm" type="button">Save .mid</button>
+        </div>
+        <canvas id="melCanvas" class="melody__grid" tabindex="0" role="application" aria-label="Melody grid. Arrow keys move the cursor, Enter adds or removes a note, [ and ] change the note length, P plays."></canvas>
+        <p class="caption" id="melStatus" role="status" aria-live="polite"></p>
+        <p class="caption">Click a cell, or use the arrow keys, <kbd>Enter</kbd> to add or remove a note, <kbd>[</kbd> <kbd>]</kbd> for its length, <kbd>Backspace</kbd> to delete, <kbd>P</kbd> to play.</p>
+      </section>
       <p class="caption play__note">Settings and sounds you save stay in this browser.</p>
     </div>
   </section>
@@ -166,6 +192,7 @@
 </dialog>
 <script src="keymap.js"></script>
 <script src="emu.js"></script>
+<script src="melody.js"></script>
 <script>
 /* Support: the owner's wallets and contacts in a dialog (the "Support" buttons). The coin badges and the addresses
  * are the owner's (their ear-training page's donation dialog). A row copies its address. */

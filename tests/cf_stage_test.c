@@ -32,7 +32,7 @@ static void appearance(void)
     cf_browser_star(&cpb,cf_progression_count()-1,1);cpb_changed_ui();cpb_flush();cpb_load();
     CHECK(cf_browser_favorite(&cpb,cf_progression_count()-1) && cpb.favorites[15]==0x10);
     CHECK(st_load(OBJ_CFPREFS,&current,sizeof current)==44 && current.version==5 && cpb_valid(&current));
-    cf_skin=0;cf_palette_build();CHECK(cf_pal[FL_BG]==0x150F0C && cf_pal[FL_INK]==0xFFF4E5 && cf_pal[48]==0xFFA55B);
+    cf_skin=0;cf_palette_build();CHECK(cf_pal[FL_BG]==0x1A1510 && cf_pal[FL_INK]==0xBFBDB6 && cf_pal[48]==0xFFB454);
 }
 static void stage(void)
 {

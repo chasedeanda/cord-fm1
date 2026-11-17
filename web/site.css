@@ -38,28 +38,30 @@
 }
 
 /* ------------------------------------------------------------------- 2 semantics: the dark default scope --- */
+/* Warm Burnout Dark: bg #1a1510; text #bfbdb6 / muted #b4a89c (AAA); accent #ffb454; borders are chrome-only, never text.
+ * Primitives (--c-*) are left as they were: the cream inverse scope still uses them. */
 :root {
-  --color-bg: var(--c-night-900);
-  --color-surface: var(--c-night-850);
-  --color-raised: var(--c-night-800);
-  --color-border: var(--c-night-700);          /* decorative only (1.45:1) */
-  --color-border-strong: var(--c-ash-600);     /* controls (3.87:1) */
-  --color-text: var(--c-cream-100);            /* 16.68:1 */
-  --color-text-muted: var(--c-ash-300);        /* 7.16:1 on bg, 6.11:1 on raised */
-  --color-accent: var(--c-rose-500);           /* 6.26:1 */
-  --color-accent-hover: var(--c-fire-400);
-  --color-on-accent: var(--c-night-900);       /* 6.26:1 on rose, 12.30:1 on fire */
-  --color-link: var(--c-sea-400);              /* 12.73:1 */
-  --color-focus: var(--c-fire-400);            /* 12.30:1 */
-  --color-ok: var(--c-lime-400);
-  --color-bad: var(--c-rose-500);
-  --color-warn: var(--c-orange-500);
-  --color-brand-a: var(--c-rose-500);          /* "Coral" */
-  --color-brand-b: var(--c-lime-400);          /* "Flower" */
-  --color-backdrop: rgb(11 7 3 / 0.78);
-  --color-header: var(--c-night-900);          /* the sticky header: solid (a see-through one needs a backdrop blur,
+  --color-bg: #1A1510;
+  --color-surface: #262018;
+  --color-raised: #332A20;
+  --color-border: #42362A;          /* decorative only (1.45:1) */
+  --color-border-strong: #8C5F3C;     /* controls (3.87:1) */
+  --color-text: #BFBDB6;            /* 16.68:1 */
+  --color-text-muted: #B4A89C;        /* 7.16:1 on bg, 6.11:1 on raised */
+  --color-accent: #FFB454;           /* 6.26:1 */
+  --color-accent-hover: #FF8F40;
+  --color-on-accent: #141210;       /* 6.26:1 on rose, 12.30:1 on fire */
+  --color-link: #90AEC0;              /* 12.73:1 */
+  --color-focus: #FFB454;            /* 12.30:1 */
+  --color-ok: #B4BC78;
+  --color-bad: #F49090;
+  --color-warn: #FF8F40;
+  --color-brand-a: #FFB454;          /* "Coral" */
+  --color-brand-b: #B4BC78;          /* "Flower" */
+  --color-backdrop: rgb(26 21 16 / 0.80);
+  --color-header: #1A1510;          /* the sticky header: solid (a see-through one needs a backdrop blur,
                                                   which Chrome redoes on every frame of a scroll) */
-  --glow-accent: rgb(232 104 121 / 0.34);
+  --glow-accent: rgb(255 180 84 / 0.30);
   --glow-plum: rgb(150 33 121 / 0.2);
   --glow-fade: rgb(150 33 121 / 0.08);         /* the glow's soft edge (a gradient, not a blur filter) */
   color-scheme: dark;
@@ -67,20 +69,20 @@
 /* the stage: the black of the FM-1's screen, for the sections built around a picture (every role set, so a stage
  * inside the cream reads as dark too) */
 .scope-stage {
-  --color-bg: var(--c-night-950);
-  --color-surface: var(--c-night-900);
-  --color-raised: var(--c-night-800);
-  --color-border: var(--c-night-700);
-  --color-border-strong: var(--c-ash-600);
-  --color-text: var(--c-cream-100);            /* 17.4:1 */
-  --color-text-muted: var(--c-ash-300);        /* 7.31:1 */
-  --color-accent: var(--c-rose-500);
-  --color-accent-hover: var(--c-fire-400);
-  --color-on-accent: var(--c-night-900);
-  --color-link: var(--c-sea-400);
-  --color-focus: var(--c-fire-400);
-  --color-brand-a: var(--c-rose-500);
-  --color-brand-b: var(--c-lime-400);
+  --color-bg: #1A1510;
+  --color-surface: #262018;
+  --color-raised: #332A20;
+  --color-border: #42362A;
+  --color-border-strong: #8C5F3C;
+  --color-text: #BFBDB6;            /* 17.4:1 */
+  --color-text-muted: #B4A89C;        /* 7.31:1 */
+  --color-accent: #FFB454;
+  --color-accent-hover: #FF8F40;
+  --color-on-accent: #141210;
+  --color-link: #90AEC0;
+  --color-focus: #FFB454;
+  --color-brand-a: #FFB454;
+  --color-brand-b: #B4BC78;
   color-scheme: dark;
   color: var(--color-text);
   background: var(--color-bg);

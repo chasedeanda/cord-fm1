@@ -13,7 +13,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:?usage: sh tools/make_site.sh OUT}
 cd "$ROOT"
 EMU=build/emu-web
-for f in index.html emu.js keymap.js worklet.js coralflower.wasm; do
+for f in index.html emu.js keymap.js melody.js worklet.js coralflower.wasm; do
     [ -f "$EMU/$f" ] || { echo "$EMU/$f missing: run sh tools/emu/web/build_web.sh first"; exit 1; }
 done
 mkdir -p "$OUT/fonts" "$OUT/images" "$OUT/install" "$OUT/play"
@@ -22,7 +22,7 @@ cp web/fonts/*.woff web/fonts/OFL-*.txt "$OUT/fonts/"
 cp tools/emu/web/favicon.svg tools/emu/web/favicon-32.png tools/emu/web/apple-touch-icon.png "$OUT/"
 cp docs/images/*.png docs/images/*.gif "$OUT/images/"
 cp web/install/index.html "$OUT/install/"
-cp "$EMU/index.html" "$EMU/emu.js" "$EMU/keymap.js" "$EMU/worklet.js" "$EMU/coralflower.wasm" "$OUT/play/"
+cp "$EMU/index.html" "$EMU/emu.js" "$EMU/keymap.js" "$EMU/melody.js" "$EMU/worklet.js" "$EMU/coralflower.wasm" "$OUT/play/"
 STAMP=$(cat web/site.css | shasum | cut -c1-10)
 # (sed -i.bak, then the .bak removed: the one form both BSD sed on macOS and GNU sed on the CI runner take)
 sed -i.bak "s|href=\"site.css\"|href=\"site.css?v=$STAMP\"|" "$OUT/index.html"

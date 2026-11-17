@@ -133,8 +133,11 @@ jobs:
       - name: Semantic phrase, protected draft and wire-format validation
         run: sh tools/test_song.sh
 
-      - name: Multi-section project model
+      - name: Multi-section project model and Melody step input
         run: sh tools/test_project.sh
+
+      - name: Browser Melody editor rules, scale table and MIDI file
+        run: node tools/emu/web/test_melody.mjs
 
       - name: Accompaniment workspace, play once, clock loss and Click preferences
         run: sh tools/test_accomp_workspace.sh

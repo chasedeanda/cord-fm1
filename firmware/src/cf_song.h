@@ -9,6 +9,13 @@
 #define CF_SONG_WIRE 344u
 enum { CF_SONG_FOLLOW, CF_SONG_MAJOR, CF_SONG_MINOR, CF_SONG_DIM, CF_SONG_AUG, CF_SONG_POWER, CF_SONG_NQUALITY };
 enum { CF_SONG_BARS, CF_SONG_QUARTERS };
+/* Per-slot play type, stored in cf_song_slot_t.bass_off (v1 wire unchanged): bit0 = bass silent, bit1 = chord silent.
+ * Old records only hold 0/1, so they decode identically (Play / Chord only). */
+enum { CF_SLOT_PLAY = 0, CF_SLOT_CHORD_ONLY = 1, CF_SLOT_BASS_ONLY = 2, CF_SLOT_SILENCE = 3, CF_SLOT_BREAK = 7, CF_SLOT_NTYPES = 5 };
+/* Break = Silence + bit2: the drums drop out too (at the next bar line, with HOME's DROP; they come back on the next
+ * slot that is not a Break). The five stored values, in the order the editor cycles them. */
+#define CF_SLOT_TYPE_OK(t) ((t) < 4u || (t) == CF_SLOT_BREAK)
+static const uint8_t CF_SLOT_TYPE_VAL[CF_SLOT_NTYPES] = {0, 1, 2, 3, 7};
 typedef struct {
     uint32_t mask;                 /* 0 follows mode; nonzero preserves an exact source chord */
     uint8_t degree;
@@ -26,7 +33,7 @@ typedef struct {
 typedef struct {
     uint32_t mask;
     uint16_t ticks;
-    uint8_t root, n, note[6], gate, tie, bass_off;
+    uint8_t root, n, note[6], gate, tie, bass_off, chord_off, drums_off;
     int8_t bass_pc, bass_oct;
 } cf_song_chord_t;
 typedef struct {

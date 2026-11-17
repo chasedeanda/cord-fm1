@@ -40,6 +40,7 @@ static uint8_t sq_live_part(void);              /* (cf_sequi.c) */
 static uint8_t sq_live_bass(void);              /* (cf_sequi.c) */
 static uint8_t sq_keys_arp(void);               /* (cf_sequi.c: the keys' ARP, a track's own while it is open) */
 static void cpa_ui_dirty(void);
+static void cf_live_info(int k, cf_knob_t *o);      /* (below: Chord Live Tones / Pair) */
 static void cf_send_config(void)                 /* the chord settings -> the audio side */
 {
     cs.chord.algo = CF_ALG_TOP_LOCK;
@@ -54,7 +55,11 @@ static void cf_send_config(void)                 /* the chord settings -> the au
     cfp_cfg.vel = cs.vel;
     cfp_cfg.bass_on = cs.bass_on;
     cfp_cfg.bass_oct = cs.bass_oct;
-    cfp_cfg.octaver = cs.octaver;
+    cfp_cfg.octaver = cs.octaver == CF_BASS_X_OCTAVER;
+    cfp_cfg.tones = cpg.live_tones;
+    cfp_cfg.pair = cpg.live_pair;
+    cfp_cfg.pedal = cs.octaver >= CF_BASS_X_PEDAL_I;
+    cfp_cfg.pedal_pc = cfp_cfg.pedal ? (uint8_t)((cs.chord.tonic + CF_PEDAL_STEP[cs.octaver - CF_BASS_X_PEDAL_I]) % 12) : 0;
     cfp_cfg.midi_out = cs.midi_out;
     cfp_cfg.ch_chord = cs.ch_chord;
     cfp_cfg.ch_bass = cs.ch_bass;
@@ -385,7 +390,7 @@ static void ui_knob_info(int k, cf_knob_t *o)
             if (cs.bass_oct > 0)
                 o->val[0] = '+', kint(o->val + 1, cs.bass_oct, 0);
             break;
-        default: kfmt(o->name, 12, "OCTAVER"); kfmt(o->val, 14, cs.octaver ? "On" : "Off"); break;
+        default: kfmt(o->name, 12, "EXTRA"); kfmt(o->val, 14, CF_BASS_X_NAME[cs.octaver < CF_BASS_X_N ? cs.octaver : 0]); break;
         }
         break;
     case SCR_SAVE: {
@@ -462,6 +467,7 @@ static void ui_knob_info(int k, cf_knob_t *o)
         case CF_GLO_HARMONY:
             if (k == 0) { kfmt(o->name, 12, "HARMONY"); kfmt(o->val, 14, ch.mode ? "On" : "Off"); }
             if (k == 1) { kfmt(o->name, 12, "RESET"); kfmt(o->val, 14, "Defaults"); }
+            if (k >= 2) cf_live_info(k, o);
             break;
         case 6:
             if(k==0) {kfmt(o->name,12,"PAGE");kfmt(o->val,14,CF_DIAG_PAGES[cfd.page]);}
@@ -568,9 +574,25 @@ static void cpa_glide(int d)
 }
 
 /* Shared by the Harmony settings page and the sixth HOME keyboard guide. */
+static const char *const CF_PAIR_NAME[CF_PAIR_N] = {"Off", "Octave", "3rd", "4th", "5th", "6th", "10th"};
+static void cf_live_info(int k, cf_knob_t *o)    /* K3 / K4 of the Harmony page and the Learn bank */
+{
+    if (k == 2) { kfmt(o->name, 12, "TONES"); if (cpg.live_tones) kint(o->val, cpg.live_tones, " max"); else kfmt(o->val, 14, "All"); }
+    else { kfmt(o->name, 12, "PAIR"); kfmt(o->val, 14, CF_PAIR_NAME[cpg.live_pair < CF_PAIR_N ? cpg.live_pair : 0]); }
+}
+static void cf_live_turn(int k, int d)
+{
+    if (k == 2) {                                 /* All -> 2 -> 3 -> 4 -> All */
+        int t = cpg.live_tones ? cpg.live_tones - 1 : 0;      /* 0 All, 1..3 = 2..4 tones */
+        t = clampi(t + d, 0, 3);
+        cpg.live_tones = (uint8_t)(t ? t + 1 : 0);
+    } else cpg.live_pair = (uint8_t)clampi((int)cpg.live_pair + d, 0, CF_PAIR_N - 1);
+    cf_send_config();
+}
 static void cf_harmony_turn(int k, int d)
 {
-    if (!d || k > 1) return;
+    if (!d || k > 3) return;
+    if (k >= 2) { cf_live_turn(k, d); return; }
     if (k == 0) ch.mode = (uint8_t)clampi(ch.mode + d, 0, CF_H_AUTO);
     else { cf_harmony_defaults(&ch); ch.mode=CF_H_AUTO; cf_message("Harmony defaults restored"); }
     cf_send_config();
@@ -667,7 +689,7 @@ static void ui_knob_turn(int k, int d)
         else if (k == 2)
             cs.bass_oct = (int8_t)clampi(cs.bass_oct + d, -2, 2);
         else
-            cs.octaver = (uint8_t)(d > 0);
+            cs.octaver = (uint8_t)clampi((int)cs.octaver + d, 0, CF_BASS_X_N - 1);
         cf_send_config();
         break;
     case SCR_SAVE: {

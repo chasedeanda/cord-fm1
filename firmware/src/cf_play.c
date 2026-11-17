@@ -76,6 +76,8 @@ typedef struct {
     uint8_t notes_in;           /* GLO > MIDI > NOTES IN (CF_NI_*): notes in play the parts directly
                                  * (Direct), else they go to the UI as the FM-1's keys or as roots (cf_out.c cf_xq) */
     uint8_t in_ch;              /* .. the channel those two take notes from: 0 every one, 1..16 (GLO > MIDI > IN CH) */
+    uint8_t pedal, pedal_pc;    /* Bass pedal point: the bass holds one pitch class (pedal_pc) under every chord */
+    uint8_t tones, pair;        /* Chord Live Tones / Pair (cf_chord_voicing) */
 } cf_play_cfg_t;
 
 /* the beat grid the arpeggiator locks to while the metronome's clock runs (cf_out.c cfm_tick writes it): on, where it
@@ -380,8 +382,12 @@ static int cfp_bass_calc(const cf_chord_out_t *o, uint8_t out[2])
         return 0;
     /* an octave under the root as played (the owner's 0), so the bass goes the way the keys go (it used to sit in
      * C2 .. B2 by pitch class: B up to C fell eleven semitones); a bass degree other than the root: its nearest note */
-    b = (int)o->root_note - 12 + 12 * cfp_cfg.bass_oct;
-    b += ((o->bass_pc - (b % 12 + 12) % 12 + 18) % 12) - 6;
+    if (cfp_cfg.pedal)                               /* a pedal does not follow the roots: a fixed register (C2..B2) */
+        b = 36 + cfp_cfg.pedal_pc + 12 * cfp_cfg.bass_oct;
+    else {
+        b = (int)o->root_note - 12 + 12 * cfp_cfg.bass_oct;
+        b += ((o->bass_pc - (b % 12 + 12) % 12 + 18) % 12) - 6;
+    }
     while (b < 12)                                   /* (only the MIDI range folds it: a fold is a jump) */
         b += 12;
     while (b > 96)
@@ -550,6 +556,7 @@ static void cfp_config(void)                         /* CFE_CONFIG: the UI's set
     cfc.source = cfsrc_shadow; cfc.source_n = cfsrc_n;
     cpa_overlay_source();
     cf_chord_harmony(&cfc, &cfh_shadow);
+    cf_chord_voicing(&cfc, cfp_cfg.tones, cfp_cfg.pair);
     cf_chord_cfg_t cfg = cfc_shadow;
     cpa_overlay_cfg(&cfg);
     cf_chord_config(&cfc, &cfg);

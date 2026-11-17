@@ -43,15 +43,15 @@ mkdir -p "$OUT"
 sh tests/hostcc.sh emcc -O2 -w -std=gnu11 -I$W/compat -Ibuild/gen -Ifirmware/src -DEMU_WEB "-DFELUCCA_VERSION=\"$VER\"" \
     --no-entry -sSTANDALONE_WASM -sFILESYSTEM=0 -sSTACK_SIZE=1048576 -sINITIAL_MEMORY=33554432 \
     -o "$OUT/coralflower.wasm" $W/emu_web.c
-cp $W/index.html $W/emu.js $W/keymap.js $W/worklet.js "$OUT/"
+cp $W/index.html $W/emu.js $W/keymap.js $W/worklet.js $W/melody.js "$OUT/"
 # a new build is a new address: the browser cannot run a cached wasm or script after a rebuild (a plain reload did)
-STAMP=$(cat "$OUT/coralflower.wasm" $W/emu.js $W/keymap.js $W/worklet.js | shasum | cut -c1-10)
+STAMP=$(cat "$OUT/coralflower.wasm" $W/emu.js $W/keymap.js $W/worklet.js $W/melody.js | shasum | cut -c1-10)
 # (sed -i.bak, then the .bak removed: the one form both BSD sed on macOS and GNU sed on the CI runner take)
-sed -i.bak -e "s/src=\"keymap.js\"/src=\"keymap.js?v=$STAMP\"/" -e "s/src=\"emu.js\"/src=\"emu.js?v=$STAMP\"/" "$OUT/index.html"
+sed -i.bak -e "s/src=\"keymap.js\"/src=\"keymap.js?v=$STAMP\"/" -e "s/src=\"emu.js\"/src=\"emu.js?v=$STAMP\"/" -e "s/src=\"melody.js\"/src=\"melody.js?v=$STAMP\"/" "$OUT/index.html"
 sed -i.bak -e "s/getBytes(\"coralflower.wasm\")/getBytes(\"coralflower.wasm?v=$STAMP\")/" \
     -e "s/addModule(\"worklet.js\")/addModule(\"worklet.js?v=$STAMP\")/" "$OUT/emu.js"
 rm -f "$OUT/index.html.bak" "$OUT/emu.js.bak"
 echo "emu-web: $OUT ($VER)"
-for f in coralflower.wasm index.html emu.js keymap.js worklet.js; do
+for f in coralflower.wasm index.html emu.js keymap.js worklet.js melody.js; do
     printf '  %-16s %8d B\n' "$f" "$(wc -c < "$OUT/$f")"
 done

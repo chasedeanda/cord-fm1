@@ -18,7 +18,7 @@ int cf_song_valid(const cf_song_t *s)
     for(unsigned i=0;i<s->n;i++) {
         const cf_song_slot_t *v=&s->slot[i];
         if(v->degree>6 || v->alter< -1 || v->alter>1 || v->inversion< -1 || v->inversion>3 || v->reg< -2 || v->reg>2 ||
-           !v->bars || v->bars>8 || v->bass< -1 || v->bass>11 || v->bass_oct< -2 || v->bass_oct>1 || v->bass_off>1 ||
+           !v->bars || v->bars>8 || v->bass< -1 || v->bass>11 || v->bass_oct< -2 || v->bass_oct>1 || !CF_SLOT_TYPE_OK(v->bass_off) ||
            v->quality>=CF_SONG_NQUALITY || v->color>=CF_MOD_N || v->gate<20 || v->gate>100 || v->tie>1 ||
            v->unit>CF_SONG_QUARTERS || !v->quarters || v->quarters>128 ||
            (v->mask && (!(v->mask&1u) || v->mask>0xFFFFFFu || csg_count(v->mask)>6)))return 0;
@@ -67,7 +67,7 @@ int cf_song_resolve(const cf_song_t *s,unsigned slot,const cf_chord_cfg_t *cfg,
     if(!nn || nn>6)return 0;for(unsigned i=0;i<nn;i++)
         if(!next.n || notes[i]!=next.note[next.n-1])next.note[next.n++]=notes[i];
     next.ticks=v->unit==CF_SONG_BARS?v->bars*s->beats*96u:v->quarters*96u*(s->beats==6?2u:1u)/4u;
-    next.gate=v->gate;next.tie=v->tie;next.bass_off=v->bass_off;next.bass_oct=v->bass_oct;
+    next.gate=v->gate;next.tie=v->tie;next.bass_off=v->bass_off&1u;next.chord_off=(v->bass_off>>1)&1u;next.drums_off=(v->bass_off>>2)&1u;next.bass_oct=v->bass_oct;
     next.bass_pc=(int8_t)((next.root+(v->bass<0?0:v->bass))%12);*out=next;return 1;
 }
 int cf_song_insert(cf_song_t *s,unsigned at,int duplicate)

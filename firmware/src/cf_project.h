@@ -105,6 +105,12 @@ int cf_project_insert_section(cf_project_t *project, unsigned at, unsigned sourc
 int cf_project_remove_section(cf_project_t *project, unsigned at);
 int cf_project_add_event(cf_project_t *project, unsigned track, const cf_project_event_t *event);
 int cf_project_remove_event(cf_project_t *project, unsigned track, unsigned at);
+/* Piano-roll step input for a Melody tab: the index of the event starting at (section, start_tick) on note, or -1 */
+int cf_project_find_event(const cf_project_t *project, unsigned track, unsigned section, uint32_t start_tick, unsigned note);
+/* Toggle one note: remove it when an event already starts there on that note (returns 2), else add it (returns 1);
+ * 0 when it does not fit the section or the track is full. Ticks are 96 PPQN: a 16th is 24. */
+int cf_project_toggle_note(cf_project_t *project, unsigned track, unsigned section, uint32_t start_tick,
+                           unsigned note, unsigned duration_ticks, unsigned velocity);
 /* CPJ1 v1 is variable-length and bounded by CF_PROJECT_WIRE_MAX (3,808 bytes). */
 int cf_project_encode(const cf_project_t *project, uint8_t *out, unsigned capacity, unsigned *written);
 int cf_project_decode(cf_project_t *project, const uint8_t *bytes, unsigned size);

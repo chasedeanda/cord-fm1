@@ -14,7 +14,7 @@ static void cf_cord_palette(void)
 {
     for(unsigned i=0;i<32;i++)cf_pal[8+i]=cfn_blend(0x0C0707,0x823012,i*255/31);
     cf_pal[FL_BG]=0x0C0707;cf_pal[FL_INK]=0xFFFFFF;
-    cf_pal[48]=0xFFA55B;cf_pal[FL_INK2]=0xFFFFFF;cf_pal[FL_INK3]=0x999999;
+    cf_pal[48]=0xFFB454;cf_pal[FL_INK2]=0xFFFFFF;cf_pal[FL_INK3]=0x999999;
     for(unsigned i=0;i<CFM_ART_COLORS;i++)cf_pal[CFM_PAL_BASE+i]=CFM_ART[0].rgb[i];
     cf_pal[CFN_AA_BASE]=cfn_blend(cf_pal[FL_BG],0xFFFFFF,85);
     cf_pal[CFN_AA_BASE+1]=cfn_blend(cf_pal[FL_BG],0xFFFFFF,170);

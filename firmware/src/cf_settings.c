@@ -111,7 +111,7 @@ static void cfs_sanitize(cf_set_t *s)
     if (s->backdrop >= FL_NBD) s->backdrop = d.backdrop;
     s->glide_always = s->glide_always != 0;
     s->bass_on = s->bass_on != 0;
-    s->octaver = s->octaver != 0;
+    if (s->octaver >= CF_BASS_X_N) s->octaver = 0;       /* (0 Off, 1 Octaver, 2..4 Pedal) */
     s->env_link = s->env_link != 0;
     s->midi_out = s->midi_out != 0;
     s->lights = s->lights != 0;
